@@ -102,12 +102,6 @@ class Exp_Yield_Regression(Exp_Basic):
                     outputs = self.model(batch_x, batch_x_static)
                     loss = criterion(outputs, batch_y)
 
-                if i == 0:
-                    print(f"\n[DEBUG] Inside training loop (first batch):")
-                    print(f"  Batch_y has NaNs: {torch.isnan(batch_y).any()}")
-                    print(f"  Model outputs have NaNs: {torch.isnan(outputs).any()}")
-                    print(f"  Loss is NaN: {torch.isnan(loss)}")
-
                 train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:

@@ -55,35 +55,20 @@ class Model(nn.Module):
         )
 
     def forward(self, x_dynamic, x_static):
-        # Replace NaNs with 0
+        # Replace NaNs with 0 to ensure robustness
         x_dynamic = torch.nan_to_num(x_dynamic)
         x_static = torch.nan_to_num(x_static)
 
-        if not hasattr(self, 'printed_once'):
-            self.printed_once = True
-            print(f"\n[DEBUG] Inside PatchTST_Regression forward pass:")
-            print(f"  Input x_dynamic has NaNs: {torch.isnan(x_dynamic).any()}")
-            print(f"  Input x_static has NaNs: {torch.isnan(x_static).any()}")
-
         # (B, L, C) -> (B, n_vars, N, D)
         time_series_repr = self.backbone(x_dynamic) 
-        if hasattr(self, 'printed_once') and self.printed_once:
-            print(f"  After backbone, time_series_repr has NaNs: {torch.isnan(time_series_repr).any()}")
         
         # (B, n_vars, N, D) -> (B, D)
         time_series_repr_flat = time_series_repr.mean(dim=1)[:, -1, :]
-        if hasattr(self, 'printed_once') and self.printed_once:
-            print(f"  After pooling, time_series_repr_flat has NaNs: {torch.isnan(time_series_repr_flat).any()}")
         
         # (B, D) 和 (B, M) -> (B, D + M)
         combined_features = torch.cat([time_series_repr_flat, x_static], dim=1)
-        if hasattr(self, 'printed_once') and self.printed_once:
-            print(f"  After cat, combined_features has NaNs: {torch.isnan(combined_features).any()}")
         
         # (B, D + M) -> (B, 1)
         prediction = self.regression_head(combined_features)
-        if hasattr(self, 'printed_once') and self.printed_once:
-            print(f"  Final prediction has NaNs: {torch.isnan(prediction).any()}")
-            del self.printed_once # Clean up
         
         return prediction

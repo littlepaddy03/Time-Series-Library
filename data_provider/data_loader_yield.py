@@ -128,12 +128,6 @@ class ShardedYieldDataset(Dataset):
             'dynamic_mean': torch.FloatTensor(dynamic_mean), 'dynamic_std': torch.FloatTensor(dynamic_std),
             'static_mean': torch.FloatTensor(static_mean), 'static_std': torch.FloatTensor(static_std),
         }
-        print(f"[DEBUG] Scaler calculated. Stats:\n"
-              f"  Static mean has NaNs: {torch.isnan(scaler_dict['static_mean']).any()}\n"
-              f"  Static std has NaNs: {torch.isnan(scaler_dict['static_std']).any()}\n"
-              f"  Dynamic mean has NaNs: {torch.isnan(scaler_dict['dynamic_mean']).any()}\n"
-              f"  Dynamic std has NaNs: {torch.isnan(scaler_dict['dynamic_std']).any()}")
-
         return scaler_dict
 
     def __len__(self):
@@ -154,13 +148,6 @@ class ShardedYieldDataset(Dataset):
         if self.scaler:
             dynamic_features = (dynamic_features - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
             static_features = (static_features - self.scaler['static_mean']) / (self.scaler['static_std'] + 1e-8)
-
-        if not hasattr(self, 'printed_once'):
-            self.printed_once = True
-            print(f"[DEBUG] First item loaded. Stats:\n"
-                  f"  Dynamic features have NaNs: {torch.isnan(dynamic_features).any()}\n"
-                  f"  Static features have NaNs: {torch.isnan(static_features).any()}\n"
-                  f"  Target has NaNs: {torch.isnan(target).any()}")
 
         return dynamic_features, static_features, target
 
