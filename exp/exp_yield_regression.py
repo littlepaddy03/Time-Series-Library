@@ -23,8 +23,11 @@ class Exp_Yield_Regression(Exp_Basic):
         return model
 
     def _get_data(self, flag):
-        data_set, data_loader = data_provider_yield(self.args, flag)
-        return data_set, data_loader
+        if flag == 'train':
+            return data_provider_yield(self.args, flag)
+        else:
+            # This is handled by the train flag call now
+            return None, None
 
     def _select_optimizer(self):
         model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
@@ -64,8 +67,7 @@ class Exp_Yield_Regression(Exp_Basic):
         return total_loss, r2
 
     def train(self, setting):
-        train_data, train_loader = self._get_data(flag='train')
-        vali_data, vali_loader = self._get_data(flag='val')
+        train_data, train_loader, vali_data, vali_loader, test_data, test_loader = self._get_data(flag='train')
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -130,14 +132,13 @@ class Exp_Yield_Regression(Exp_Basic):
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 
+        # Perform final test
+        print("------ Final Test ------")
+        self.test(test_loader)
+
         return self.model
 
-    def test(self, setting, test=0):
-        test_data, test_loader = self._get_data(flag='test')
-        if test:
-            print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
-
+    def test(self, test_loader):
         preds = []
         trues = []
         
