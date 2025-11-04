@@ -4,8 +4,8 @@ export CUDA_VISIBLE_DEVICES=0
 python -u run.py \
   --task_name yield_regression \
   --is_training 1 \
-  --root_path ./dataset/yield_prediction/ \
-  --data_path dummy \
+  --root_path ./ \
+  --data_path dataset/global_yield_dataset/ \
   --model_id Global_Yield_PatchTST \
   --model PatchTST_Regression \
   --data custom \
