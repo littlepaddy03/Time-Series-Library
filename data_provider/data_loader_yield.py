@@ -135,8 +135,6 @@ class ShardedYieldDataset(Dataset):
               f"  Dynamic std has NaNs: {torch.isnan(scaler_dict['dynamic_std']).any()}")
 
         return scaler_dict
-            'static_mean': torch.FloatTensor(static_mean), 'static_std': torch.FloatTensor(static_std),
-        }
 
     def __len__(self):
         return len(self.indices)
