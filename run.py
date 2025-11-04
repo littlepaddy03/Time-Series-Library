@@ -7,6 +7,7 @@ from exp.exp_imputation import Exp_Imputation
 from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_classification import Exp_Classification
+from exp.exp_yield_regression import Exp_Yield_Regression
 from utils.print_args import print_args
 import random
 import numpy as np
@@ -140,6 +141,13 @@ if __name__ == '__main__':
     # TimeXer
     parser.add_argument('--patch_len', type=int, default=16, help='patch length')
 
+    # Yield Regression Task
+    parser.add_argument('--regions', type=str, default='us,ar,br,cn,in,eu', help='regions to use for training')
+    parser.add_argument('--static_feat_dim', type=int, default=65, help='dimension of static features')
+    parser.add_argument('--n_experts', type=int, default=8, help='number of experts in MoE model')
+    parser.add_argument('--head_mlp_dim', type=int, default=128, help='dimension of MLP in regression head')
+    parser.add_argument('--aux_loss_weight', type=float, default=0.01, help='weight for auxiliary MoE loss')
+
     args = parser.parse_args()
     if torch.cuda.is_available() and args.use_gpu:
         args.device = torch.device('cuda:{}'.format(args.gpu))
@@ -170,6 +178,8 @@ if __name__ == '__main__':
         Exp = Exp_Anomaly_Detection
     elif args.task_name == 'classification':
         Exp = Exp_Classification
+    elif args.task_name == 'yield_regression':
+        Exp = Exp_Yield_Regression
     else:
         Exp = Exp_Long_Term_Forecast
 

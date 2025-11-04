@@ -1,170 +1,172 @@
 import os
-import glob
 import numpy as np
+import pandas as pd
+from torch.utils.data import Dataset
+from sklearn.model_selection import train_test_split
 import torch
-from torch.utils.data import Dataset, DataLoader
-from typing import List, Tuple, Dict, Optional
-
-# --- 静态特征的列索引 (基于 Step 1 的 ETL 脚本) ---
-# [county_id, year, crop_id, lat, lon, ...soil...]
-YEAR_COLUMN_INDEX = 1 # 'year' 在 static_features.npy 中的第 1 列 (0-indexed)
 
 class ShardedYieldDataset(Dataset):
-    """
-    一个自定义的 PyTorch Dataset 类, 用于处理按区域分片的大型Numpy数据集。
-    
-    它会:
-    1.  加载所有指定区域(分片)的 .npy 文件。
-    2.  使用内存映射 (mmap_mode) 来避免RAM溢出。
-    3.  根据 'year' 列将数据动态分割为 'train', 'val', 'test' 集。
-    4.  创建一个全局索引, 映射到 (shard_index, local_index)。
-    """
-    def __init__(self, 
-                 root_path: str, 
-                 regions: List[str], 
-                 mode: str = 'train',
-                 val_years: List[int] = [2018, 2019],
-                 test_years: List[int] = [2020, 2021, 2022]):
-        """
-        初始化 Dataset.
-        """
-        super().__init__()
+    def __init__(self, data_path, regions, flag='train', test_ratio=0.1, val_ratio=0.2):
+        self.data_path = data_path
+        self.regions = regions.split(',')
+        self.flag = flag
         
-        self.root_path = root_path
-        self.regions = regions
-        self.mode = mode
-        
-        self.dynamic_data = []
-        self.static_data = []
-        self.targets = []
-        
-        # self.index_map 是核心: (shard_index, local_index)
-        self.index_map: List[Tuple[int, int]] = []
+        self.scaler = None
+        self._scan_and_build_index()
+        self._calculate_scaler()
 
-        print(f"[{self.mode} Mode] Loading regions: {self.regions}...")
+    def _scan_and_build_index(self):
+        print("Building global index...")
+        self.global_index = []
+        self.metadata = []
+
+        for region in self.regions:
+            region_path = os.path.join(self.data_path, region)
+            static_features = np.load(os.path.join(region_path, 'static_features.npy'), mmap_mode='r')
+
+            num_samples = static_features.shape[0]
+            for i in range(num_samples):
+                # Store (region, local_index)
+                self.global_index.append((region, i))
+                # Store metadata for splitting: (lon, lat, year, crop_id)
+                self.metadata.append(static_features[i, [0, 1, 2, 3]])
+
+        self.metadata = pd.DataFrame(self.metadata, columns=['lon', 'lat', 'year', 'crop_id'])
+        self.metadata['global_idx'] = np.arange(len(self.global_index))
+
+        # --- Data Splitting Logic ---
+        train_indices, val_indices, test_indices = [], [], []
+
+        # Group by crop and region (implicitly handled by crop_id uniqueness for now)
+        for crop_id in self.metadata['crop_id'].unique():
+            crop_df = self.metadata[self.metadata['crop_id'] == crop_id]
+
+            # Split by years for this crop
+            years = crop_df['year'].unique()
+
+            # First, split off a test set
+            train_val_years, test_years = train_test_split(years, test_size=0.1, random_state=42)
+
+            # Then, split the remainder into train and validation
+            train_years, val_years = train_test_split(train_val_years, test_size=0.22, random_state=42) # 0.22 * 0.9 = ~0.2
+
+            # Collect indices based on year splits
+            train_indices.extend(crop_df[crop_df['year'].isin(train_years)]['global_idx'].values)
+            val_indices.extend(crop_df[crop_df['year'].isin(val_years)]['global_idx'].values)
+            test_indices.extend(crop_df[crop_df['year'].isin(test_years)]['global_idx'].values)
         
-        for shard_index, region_name in enumerate(self.regions):
-            region_dir = os.path.join(self.root_path, region_name)
+        if self.flag == 'train':
+            self.indices = train_indices
+        elif self.flag == 'val':
+            self.indices = val_indices
+        else:
+            self.indices = test_indices
+        
+        print(f"Flag: {self.flag}, Number of samples: {len(self.indices)}")
+
+
+    def _calculate_scaler(self):
+        print("Calculating scaler on training data...")
+        # Use only training indices to calculate mean and std
+        train_idxs = self.indices if self.flag == 'train' else \
+                     [i for i, meta in self.metadata.iterrows() if meta['global_idx'] in self.indices]
+
+
+        # More memory-efficient calculation of scaler
+        # Process in chunks to avoid loading all data into memory
+
+        # Static features
+        static_sum = np.zeros(65, dtype=np.float64)
+        static_sq_sum = np.zeros(65, dtype=np.float64)
+        
+        # Dynamic features
+        dynamic_sum = np.zeros(20, dtype=np.float64)
+        dynamic_sq_sum = np.zeros(20, dtype=np.float64)
+        non_zero_count = np.zeros(20, dtype=np.int64)
+
+        temp_data_cache = {region: {
+            'dynamic': np.load(os.path.join(self.data_path, region, 'dynamic_features.npy'), mmap_mode='r'),
+            'static': np.load(os.path.join(self.data_path, region, 'static_features.npy'), mmap_mode='r')
+        } for region in self.regions}
+
+        chunk_size = 10000
+        for i in range(0, len(train_idxs), chunk_size):
+            chunk_indices = train_idxs[i:i+chunk_size]
             
-            if not os.path.isdir(region_dir):
-                print(f"  -> 警告: 区域目录 {region_dir} 未找到, 跳过.")
-                continue
+            static_chunk = np.array([temp_data_cache[self.global_index[g_idx][0]]['static'][self.global_index[g_idx][1]] for g_idx in chunk_indices])
+            dynamic_chunk = np.array([temp_data_cache[self.global_index[g_idx][0]]['dynamic'][self.global_index[g_idx][1]] for g_idx in chunk_indices])
 
-            try:
-                # 1. 使用 mmap_mode='r' 加载数据, 'r' = 只读
-                dyn_path = os.path.join(region_dir, 'dynamic_features.npy')
-                stat_path = os.path.join(region_dir, 'static_features.npy')
-                tgt_path = os.path.join(region_dir, 'targets.npy')
-                
-                mmap_dyn = np.load(dyn_path, mmap_mode='r')
-                mmap_stat = np.load(stat_path, mmap_mode='r')
-                mmap_tgt = np.load(tgt_path, mmap_mode='r')
-                
-                # 2. 将 mmap 对象存入列表
-                self.dynamic_data.append(mmap_dyn)
-                self.static_data.append(mmap_stat)
-                self.targets.append(mmap_tgt)
-                
-                # 3. 根据年份构建索引
-                years = mmap_stat[:, YEAR_COLUMN_INDEX] 
-                
-                if self.mode == 'train':
-                    mask = ~np.isin(years, val_years + test_years)
-                elif self.mode == 'val':
-                    mask = np.isin(years, val_years)
-                elif self.mode == 'test':
-                    mask = np.isin(years, test_years)
-                
-                local_indices = np.where(mask)[0]
-                
-                print(f"  -> 区域 '{region_name}' 加载成功. "
-                      f"总样本: {len(years)}, "
-                      f"'{self.mode}' 样本: {len(local_indices)}")
+            static_sum += static_chunk.sum(axis=0)
+            static_sq_sum += np.square(static_chunk).sum(axis=0)
 
-                # 4. 创建全局索引映射
-                for local_idx in local_indices:
-                    self.index_map.append((shard_index, local_idx))
+            non_zero_mask = dynamic_chunk != 0
+            dynamic_sum += dynamic_chunk.sum(axis=(0, 1))
+            dynamic_sq_sum += np.square(dynamic_chunk).sum(axis=(0, 1))
+            non_zero_count += non_zero_mask.sum(axis=(0, 1))
 
-            except Exception as e:
-                print(f"  -> 错误: 加载区域 {region_name} 失败: {e}. 跳过.")
+        num_train_samples = len(train_idxs)
+        static_mean = static_sum / num_train_samples
+        static_std = np.sqrt(static_sq_sum / num_train_samples - np.square(static_mean))
 
-        self.total_length = len(self.index_map)
-        print(f"[{self.mode} Mode] Dataset 初始化完毕. 总样本数 = {self.total_length}")
+        dynamic_mean = dynamic_sum / non_zero_count
+        dynamic_std = np.sqrt(dynamic_sq_sum / non_zero_count - np.square(dynamic_mean))
+
+        self.scaler = {
+            'dynamic_mean': torch.FloatTensor(dynamic_mean),
+            'dynamic_std': torch.FloatTensor(dynamic_std),
+            'static_mean': torch.FloatTensor(static_mean),
+            'static_std': torch.FloatTensor(static_std),
+        }
+        print("Scaler calculation finished.")
 
 
-    def __len__(self) -> int:
-        return self.total_length
+    def __len__(self):
+        return len(self.indices)
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if index < 0 or index >= self.total_length:
-            raise IndexError(f"索引 {index} 超出范围 (0 to {self.total_length-1})")
-            
-        # 1. 映射全局索引
-        shard_index, local_index = self.index_map[index]
+    def __getitem__(self, index):
+        global_idx = self.indices[index]
+        region, local_idx = self.global_index[global_idx]
+
+        region_path = os.path.join(self.data_path, region)
         
-        # 2. 从 mmap 对象中获取数据
-        x_dynamic = self.dynamic_data[shard_index][local_index].astype(np.float32)
-        x_static = self.static_data[shard_index][local_index].astype(np.float32)
-        y_target = self.targets[shard_index][local_index].astype(np.float32)
-        
-        # 3. 转换为 PyTorch Tensors
-        return (
-            torch.tensor(x_dynamic, dtype=torch.float32),
-            torch.tensor(x_static, dtype=torch.float32),
-            torch.tensor(y_target, dtype=torch.float32)
-        )
+        # Load data for the specific item
+        dynamic_features = np.load(os.path.join(region_path, 'dynamic_features.npy'), mmap_mode='r')[local_idx]
+        static_features = np.load(os.path.join(region_path, 'static_features.npy'), mmap_mode='r')[local_idx]
+        target = np.load(os.path.join(region_path, 'targets.npy'), mmap_mode='r')[local_idx]
+
+        # Convert to tensor
+        dynamic_features = torch.FloatTensor(dynamic_features)
+        static_features = torch.FloatTensor(static_features)
+        target = torch.FloatTensor(target)
+
+        # Apply normalization
+        if self.scaler:
+            dynamic_features = (dynamic_features - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
+            static_features = (static_features - self.scaler['static_mean']) / (self.scaler['static_std'] + 1e-8)
+
+        return dynamic_features, static_features, target
 
 def data_provider_yield(args, flag):
-    """
-    TSLib 实验文件 (exp_yield.py) 将调用的主函数
-    """
-    
-    # 从 args 中解析年份和区域
-    # 我们假设 args.val_years = "2018,2019"
-    # 我们假设 args.test_years = "2020,2021,2022"
-    # 我们假设 args.regions = "ar,br,us,cn,in,eu"
-    
-    try:
-        val_years = [int(y) for y in args.val_years.split(',')]
-        test_years = [int(y) for y in args.test_years.split(',')]
-        regions = args.regions.split(',')
-    except Exception as e:
-        print(f"错误: 解析 val_years, test_years, 或 regions 失败. 请检查参数。")
-        raise e
-
-    if flag == 'train':
+    if flag == 'test':
+        shuffle_flag = False
+        drop_last = False
+        batch_size = args.batch_size
+    else: # train or val
         shuffle_flag = True
         drop_last = True
-        mode = 'train'
-    elif flag == 'val':
-        shuffle_flag = False
-        drop_last = False
-        mode = 'val'
-    elif flag == 'test':
-        shuffle_flag = False
-        drop_last = False
-        mode = 'test'
-    else:
-        raise ValueError(f"无效的 flag: {flag}")
+        batch_size = args.batch_size
 
     dataset = ShardedYieldDataset(
-        root_path=args.root_path,
-        regions=regions,
-        mode=mode,
-        val_years=val_years,
-        test_years=test_years
+        data_path=args.data_path,
+        regions=args.regions,
+        flag=flag
     )
     
-    print(f"Data loader for {flag} created with {len(dataset)} samples.")
-    
-    data_loader = DataLoader(
-        dataset=dataset,
-        batch_size=args.batch_size,
+    data_loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
         shuffle=shuffle_flag,
         num_workers=args.num_workers,
-        pin_memory=True, # 如果使用GPU, 建议开启
-        drop_last=drop_last,
-        persistent_workers=True if args.num_workers > 0 else False
+        drop_last=drop_last
     )
-    
     return dataset, data_loader
