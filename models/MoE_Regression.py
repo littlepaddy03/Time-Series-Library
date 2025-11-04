@@ -64,6 +64,10 @@ class MoE_Regression(nn.Module):
         )
 
     def forward(self, x_dynamic, x_static):
+        # Replace NaNs with 0
+        x_dynamic = torch.nan_to_num(x_dynamic)
+        x_static = torch.nan_to_num(x_static)
+
         batch_size, _, _ = x_dynamic.shape
 
         # 1. Gating: 获取路由权重和决策
