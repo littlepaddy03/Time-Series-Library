@@ -1,3 +1,1 @@
-from data_provider.data_loader import data_provider
-
 from .data_loader_yield import data_provider_yield

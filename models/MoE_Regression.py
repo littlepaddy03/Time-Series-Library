@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from models.PatchTST import PatchTST_backbone
+from models.PatchTST_Regression import PatchTST_backbone
 
 class GatingNetwork(nn.Module):
     """
@@ -34,10 +34,11 @@ class Expert(nn.Module):
         self.backbone = PatchTST_backbone(configs)
 
     def forward(self, x):
-        # (B, L, C) -> (B, N, D)
+        # (B, L, C) -> (B, n_vars, N, D)
         time_series_repr = self.backbone(x)
-        # (B, N, D) -> (B, D)
-        return time_series_repr[:, -1, :] # 使用最后一个 patch 作为表征
+        # (B, n_vars, N, D) -> (B, D)
+        # Average over n_vars and take the last patch
+        return time_series_repr.mean(dim=1)[:, -1, :]
 
 class MoE_Regression(nn.Module):
     """

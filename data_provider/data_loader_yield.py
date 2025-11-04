@@ -85,7 +85,7 @@ class ShardedYieldDataset(Dataset):
         else: self.indices = self.test_indices
 
     @staticmethod
-    def _calculate_scaler(train_dataset):
+    def _calculate_scaler(train_dataset, data_files):
         print("Calculating scaler on training data...")
 
         static_sum = np.zeros(65, dtype=np.float64)
@@ -101,8 +101,8 @@ class ShardedYieldDataset(Dataset):
             static_list, dynamic_list = [], []
             for g_idx in chunk_indices:
                 region, local_idx = train_dataset.global_index[g_idx]
-                static_list.append(train_dataset.data_files[region]['static'][local_idx])
-                dynamic_list.append(train_dataset.data_files[region]['dynamic'][local_idx])
+                static_list.append(data_files[region]['static'][local_idx])
+                dynamic_list.append(data_files[region]['dynamic'][local_idx])
 
             static_chunk = np.array(static_list)
             dynamic_chunk = np.array(dynamic_list)
@@ -161,7 +161,7 @@ def data_provider_yield(args, flag):
     )
 
     # 2. Calculate scaler ONLY on the training set
-    scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset)
+    scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset, initial_train_dataset.data_files)
     initial_train_dataset.scaler = scaler
 
     # 3. Create validation and test datasets, passing the scaler and pre-computed indices
