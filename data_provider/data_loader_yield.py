@@ -116,9 +116,13 @@ class ShardedYieldDataset(Dataset):
 
         num_train_samples = len(train_dataset.indices)
         static_mean = static_sum / num_train_samples
-        static_std = np.sqrt(static_sq_sum / num_train_samples - np.square(static_mean))
+        static_var = static_sq_sum / num_train_samples - np.square(static_mean)
+        static_std = np.sqrt(np.maximum(static_var, 1e-8))
+
+        non_zero_count[non_zero_count == 0] = 1
         dynamic_mean = dynamic_sum / non_zero_count
-        dynamic_std = np.sqrt(dynamic_sq_sum / non_zero_count - np.square(dynamic_mean))
+        dynamic_var = dynamic_sq_sum / non_zero_count - np.square(dynamic_mean)
+        dynamic_std = np.sqrt(np.maximum(dynamic_var, 1e-8))
 
         return {
             'dynamic_mean': torch.FloatTensor(dynamic_mean), 'dynamic_std': torch.FloatTensor(dynamic_std),

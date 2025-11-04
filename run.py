@@ -147,6 +147,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_experts', type=int, default=8, help='number of experts in MoE model')
     parser.add_argument('--head_mlp_dim', type=int, default=128, help='dimension of MLP in regression head')
     parser.add_argument('--aux_loss_weight', type=float, default=0.01, help='weight for auxiliary MoE loss')
+    parser.add_argument('--max_grad_norm', type=float, default=1.0, help='max gradient norm for clipping')
 
     args = parser.parse_args()
     if torch.cuda.is_available() and args.use_gpu:
@@ -187,7 +188,8 @@ if __name__ == '__main__':
         for ii in range(args.itr):
             # setting record of experiments
             exp = Exp(args)  # set experiments
-            setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}'.format(
+
+            setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
                 args.task_name,
                 args.model_id,
                 args.model,
@@ -201,18 +203,17 @@ if __name__ == '__main__':
                 args.e_layers,
                 args.d_layers,
                 args.d_ff,
-                args.expand,
-                args.d_conv,
                 args.factor,
                 args.embed,
                 args.distil,
                 args.des, ii)
 
+            if args.task_name == 'yield_regression':
+                setting += f'_nex{args.n_experts}_hmd{args.head_mlp_dim}'
+
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
 
-            print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            exp.test(setting)
             if args.gpu_type == 'mps':
                 torch.backends.mps.empty_cache()
             elif args.gpu_type == 'cuda':
@@ -241,8 +242,13 @@ if __name__ == '__main__':
             args.distil,
             args.des, ii)
 
+        if args.task_name == 'yield_regression':
+            setting += f'_nex{args.n_experts}_hmd{args.head_mlp_dim}'
+
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-        # exp.test(setting, test=1) # This is now called from within train
+        # The test method for yield_regression does not take arguments
+        # and is called from within train(), so we can comment this out.
+        # exp.test(setting)
         if args.gpu_type == 'mps':
             torch.backends.mps.empty_cache()
         elif args.gpu_type == 'cuda':

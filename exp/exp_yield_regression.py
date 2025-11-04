@@ -113,6 +113,7 @@ class Exp_Yield_Regression(Exp_Basic):
                     time_now = time.time()
 
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
                 model_optim.step()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
