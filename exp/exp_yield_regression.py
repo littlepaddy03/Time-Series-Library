@@ -9,12 +9,14 @@ import os
 import time
 import warnings
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 warnings.filterwarnings('ignore')
 
 class Exp_Yield_Regression(Exp_Basic):
     def __init__(self, args):
         super(Exp_Yield_Regression, self).__init__(args)
+        self.writer = None
 
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
@@ -73,6 +75,8 @@ class Exp_Yield_Regression(Exp_Basic):
         if not os.path.exists(path):
             os.makedirs(path)
 
+        self.writer = SummaryWriter(log_dir=os.path.join('runs', setting))
+
         time_now = time.time()
 
         train_steps = len(train_loader)
@@ -116,9 +120,15 @@ class Exp_Yield_Regression(Exp_Basic):
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
                 model_optim.step()
 
+                self.writer.add_scalar('Loss/train_step', loss.item(), epoch * train_steps + i)
+
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             vali_loss, vali_r2 = self.vali(vali_data, vali_loader, criterion)
+
+            self.writer.add_scalar('Loss/train_epoch', train_loss, epoch)
+            self.writer.add_scalar('Loss/val', vali_loss, epoch)
+            self.writer.add_scalar('R2/val', vali_r2, epoch)
 
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss))
@@ -163,5 +173,9 @@ class Exp_Yield_Regression(Exp_Basic):
         
         r2 = r2_score(trues, preds)
         print(f'Test R2: {r2:.4f}')
+
+        if self.writer:
+            self.writer.add_scalar('R2/test', r2, 0) # Log test R2 at a single step
+            self.writer.close()
 
         return
