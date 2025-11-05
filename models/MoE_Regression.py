@@ -40,12 +40,12 @@ class Expert(nn.Module):
         # Average over n_vars and take the last patch
         return time_series_repr.mean(dim=1)[:, -1, :]
 
-class MoE_Regression(nn.Module):
+class Model(nn.Module):
     """
     第4章模型: 混合专家 (MoE) 回归模型 (参考 Switch Transformer)
     """
     def __init__(self, configs):
-        super(MoE_Regression, self).__init__()
+        super(Model, self).__init__()
         self.num_experts = configs.n_experts
         self.aux_loss_weight = configs.aux_loss_weight
 
