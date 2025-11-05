@@ -7,6 +7,7 @@ from exp.exp_imputation import Exp_Imputation
 from exp.exp_short_term_forecasting import Exp_Short_Term_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_classification import Exp_Classification
+from exp.exp_yield_regression import Exp_Yield_Regression
 from utils.print_args import print_args
 import random
 import numpy as np
@@ -140,6 +141,14 @@ if __name__ == '__main__':
     # TimeXer
     parser.add_argument('--patch_len', type=int, default=16, help='patch length')
 
+    # Yield Regression Task
+    parser.add_argument('--regions', type=str, default='us,ar,br,cn,in,eu', help='regions to use for training')
+    parser.add_argument('--static_feat_dim', type=int, default=65, help='dimension of static features')
+    parser.add_argument('--n_experts', type=int, default=8, help='number of experts in MoE model')
+    parser.add_argument('--head_mlp_dim', type=int, default=128, help='dimension of MLP in regression head')
+    parser.add_argument('--aux_loss_weight', type=float, default=0.01, help='weight for auxiliary MoE loss')
+    parser.add_argument('--max_grad_norm', type=float, default=1.0, help='max gradient norm for clipping')
+
     args = parser.parse_args()
     if torch.cuda.is_available() and args.use_gpu:
         args.device = torch.device('cuda:{}'.format(args.gpu))
@@ -170,6 +179,8 @@ if __name__ == '__main__':
         Exp = Exp_Anomaly_Detection
     elif args.task_name == 'classification':
         Exp = Exp_Classification
+    elif args.task_name == 'yield_regression':
+        Exp = Exp_Yield_Regression
     else:
         Exp = Exp_Long_Term_Forecast
 
@@ -177,7 +188,8 @@ if __name__ == '__main__':
         for ii in range(args.itr):
             # setting record of experiments
             exp = Exp(args)  # set experiments
-            setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_expand{}_dc{}_fc{}_eb{}_dt{}_{}_{}'.format(
+
+            setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
                 args.task_name,
                 args.model_id,
                 args.model,
@@ -191,18 +203,17 @@ if __name__ == '__main__':
                 args.e_layers,
                 args.d_layers,
                 args.d_ff,
-                args.expand,
-                args.d_conv,
                 args.factor,
                 args.embed,
                 args.distil,
                 args.des, ii)
 
+            if args.task_name == 'yield_regression':
+                setting += f'_nex{args.n_experts}_hmd{args.head_mlp_dim}'
+
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
 
-            print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            exp.test(setting)
             if args.gpu_type == 'mps':
                 torch.backends.mps.empty_cache()
             elif args.gpu_type == 'cuda':
@@ -231,8 +242,13 @@ if __name__ == '__main__':
             args.distil,
             args.des, ii)
 
+        if args.task_name == 'yield_regression':
+            setting += f'_nex{args.n_experts}_hmd{args.head_mlp_dim}'
+
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-        exp.test(setting, test=1)
+        # The test method for yield_regression does not take arguments
+        # and is called from within train(), so we can comment this out.
+        # exp.test(setting)
         if args.gpu_type == 'mps':
             torch.backends.mps.empty_cache()
         elif args.gpu_type == 'cuda':

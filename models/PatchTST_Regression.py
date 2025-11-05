@@ -1,6 +1,34 @@
 import torch
 import torch.nn as nn
-from models.PatchTST import PatchTST_backbone
+from models.PatchTST import Model as PatchTSTModel
+
+class PatchTST_backbone(nn.Module):
+    def __init__(self, configs):
+        super().__init__()
+        # We need a dummy task_name for the original model
+        class DummyArgs:
+            def __init__(self):
+                self.task_name = 'long_term_forecast'
+
+        dummy_configs = configs
+        dummy_configs.task_name = 'long_term_forecast'
+
+        self.patchtst = PatchTSTModel(dummy_configs)
+        self.d_model = configs.d_model
+
+    def forward(self, x): # x: [bs x seq_len x n_vars]
+        # do patching and embedding
+        x = x.permute(0, 2, 1) # [bs x n_vars x seq_len]
+        enc_out, n_vars = self.patchtst.patch_embedding(x)
+
+        # Encoder
+        enc_out, attns = self.patchtst.encoder(enc_out)
+        # z: [bs x nvars x patch_num x d_model]
+        enc_out = torch.reshape(
+            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+
+        return enc_out
+
 
 class Model(nn.Module):
     """
@@ -14,65 +42,33 @@ class Model(nn.Module):
         
         # --- 1. 初始化 TSLib 的 PatchTST 骨干网络 ---
         self.backbone = PatchTST_backbone(configs)
+        self.d_model = configs.d_model
         
         # --- 2. 定义回归头 (Regression Head) ---
-        # 我们的回归头是一个 MLP, 它接收:
-        # a) PatchTST 的输出 (configs.d_model)
-        # b) 静态特征 (configs.static_feat_dim)
-        
         self.static_feat_dim = configs.static_feat_dim
-        
         head_input_dim = configs.d_model + configs.static_feat_dim
         
         self.regression_head = nn.Sequential(
             nn.Linear(head_input_dim, configs.head_mlp_dim),
             nn.ReLU(),
             nn.Dropout(configs.dropout),
-            nn.Linear(configs.head_mlp_dim, 1) # 最终输出1个值 (产量)
+            nn.Linear(configs.head_mlp_dim, 1)
         )
 
     def forward(self, x_dynamic, x_static):
-        """
-        前向传播
-        
-        Args:
-            x_dynamic (torch.Tensor): 动态时序数据 (B, L, C)
-                                      B=batch_size, L=seq_len(365), C=n_vars(21)
-            x_static (torch.Tensor):  静态特征数据 (B, M)
-                                      B=batch_size, M=static_feat_dim(65)
-        
-        Returns:
-            torch.Tensor: 预测的产量 (B, 1)
-        """
-        
-        # 1. 通过 TSLib 骨干网络
-        # x_dynamic: (B, L, C)
-        # B = batch size
-        # L = seq_len (e.g., 365)
-        # C = n_vars (e.g., 21)
-        
-        # configs.seq_len 必须在 .sh 脚本中设置为 L (365)
-        # configs.enc_in 必须在 .sh 脚本中设置为 C (21)
-        
-        # TSLib 的 PatchTST 返回 (B, N, D)
-        # B = batch_size
-        # N = num_patches
-        # D = d_model
-        # 我们只取第一个 [CLS] token (如果使用) 或者平均池化
-        
-        # (B, L, C) -> (B, N, D)
+        # Replace NaNs with 0 to ensure robustness
+        x_dynamic = torch.nan_to_num(x_dynamic)
+        x_static = torch.nan_to_num(x_static)
+
+        # (B, L, C) -> (B, n_vars, N, D)
         time_series_repr = self.backbone(x_dynamic) 
         
-        # (B, N, D) -> (B, D)
-        # 我们使用最后一个 patch 的 embedding 作为序列的总结表征
-        # (或者使用平均池化: time_series_repr.mean(dim=1))
-        time_series_repr_flat = time_series_repr[:, -1, :]
+        # (B, n_vars, N, D) -> (B, D)
+        time_series_repr_flat = time_series_repr.mean(dim=1)[:, -1, :]
         
-        # 2. 融合静态特征
         # (B, D) 和 (B, M) -> (B, D + M)
         combined_features = torch.cat([time_series_repr_flat, x_static], dim=1)
         
-        # 3. 通过回归头
         # (B, D + M) -> (B, 1)
         prediction = self.regression_head(combined_features)
         
