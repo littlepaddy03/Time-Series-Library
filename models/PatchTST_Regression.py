@@ -14,6 +14,7 @@ class PatchTST_backbone(nn.Module):
         dummy_configs.task_name = 'long_term_forecast'
 
         self.patchtst = PatchTSTModel(dummy_configs)
+        self.d_model = configs.d_model
 
     def forward(self, x): # x: [bs x seq_len x n_vars]
         # do patching and embedding
