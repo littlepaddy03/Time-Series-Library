@@ -122,32 +122,74 @@ def verify_split(args):
     print("\n🎉 --- All Data Split Verification Checks PASSED! --- 🎉")
 
     # --- Print Sample Example ---
-    print("\n[INFO] All checks passed. Printing one sample to `data_verification_sample.log` for manual inspection...")
+    print("\n[INFO] All checks passed. Generating a detailed sample report in `data_verification_sample.log`...")
 
     # Get the first sample from the training set
-    dynamic_features, static_features, target = initial_dataset[0]
+    sample_index = 0
+    dynamic_features, static_features, target = initial_dataset[sample_index]
+
+    # Get metadata for this sample
+    global_idx = initial_dataset.indices[sample_index]
+    sample_metadata = metadata[metadata['global_idx'] == global_idx].iloc[0]
+
+    # Dynamic feature analysis
+    # Note: We are analyzing the NORMALIZED data here.
+    active_days_mask = dynamic_features.abs().sum(dim=1) > 0
+    num_active_days = active_days_mask.sum().item()
+    active_dynamic_features = dynamic_features[active_days_mask]
+
+    # Key dynamic feature columns (indices)
+    key_features = {
+        'NDVI': 0,
+        'Temperature_Air_2m_Mean_24h': 4,
+        'Precipitation_Flux': 10,
+    }
+
+    dynamic_stats = {}
+    for name, idx in key_features.items():
+        feature_slice = active_dynamic_features[:, idx]
+        dynamic_stats[name] = {
+            'mean': feature_slice.mean().item(),
+            'std': feature_slice.std().item(),
+            'min': feature_slice.min().item(),
+            'max': feature_slice.max().item(),
+        }
 
     with open("data_verification_sample.log", "w") as f:
-        f.write("--- Data Sample Verification ---\n\n")
-        f.write("This file shows the details of the first sample from the training set.\n")
-        f.write("Note: Features are normalized.\n\n")
+        f.write("--- Detailed Sample Analysis Report ---\n\n")
+        f.write("This report provides a complete profile of the first sample from the training set.\n")
+        f.write("Note: All feature values shown below are NORMALIZED.\n\n")
 
-        f.write(f"== Dynamic Features ==\n")
-        f.write(f"  - Shape: {dynamic_features.shape}\n")
-        f.write(f"  - DType: {dynamic_features.dtype}\n")
-        f.write(f"  - First 5 timesteps (first 3 features):\n{dynamic_features[:5, :3]}\n\n")
+        f.write("== 1. Sample Metadata ==\n")
+        f.write(f"  - Global Index: {global_idx}\n")
+        f.write(f"  - Region: {sample_metadata['region']}\n")
+        f.write(f"  - Crop ID: {sample_metadata['crop_id']}\n")
+        f.write(f"  - Year: {sample_metadata['year']}\n")
+        f.write(f"  - Longitude: {sample_metadata['lon']}\n")
+        f.write(f"  - Latitude: {sample_metadata['lat']}\n\n")
 
-        f.write(f"== Static Features ==\n")
+        f.write("== 2. Static Features ==\n")
         f.write(f"  - Shape: {static_features.shape}\n")
-        f.write(f"  - DType: {static_features.dtype}\n")
-        f.write(f"  - First 10 features:\n{static_features[:10]}\n\n")
+        f.write(f"  - Full Vector (all 65 features):\n")
+        f.write(np.array2string(static_features.numpy(), precision=4, separator=', ') + "\n\n")
 
-        f.write(f"== Target ==\n")
+        f.write("== 3. Dynamic Features Summary ==\n")
+        f.write(f"  - Shape: {dynamic_features.shape}\n")
+        f.write(f"  - Number of Active (non-zero) Days: {num_active_days}\n")
+        f.write("  - Statistics for key features (over active days):\n")
+        for name, stats in dynamic_stats.items():
+            f.write(f"    - {name}:\n")
+            f.write(f"        Mean: {stats['mean']:.4f}\n")
+            f.write(f"        Std:  {stats['std']:.4f}\n")
+            f.write(f"        Min:  {stats['min']:.4f}\n")
+            f.write(f"        Max:  {stats['max']:.4f}\n")
+        f.write("\n")
+
+        f.write("== 4. Target Value ==\n")
         f.write(f"  - Shape: {target.shape}\n")
-        f.write(f"  - DType: {target.dtype}\n")
-        f.write(f"  - Value: {target.item()}\n")
+        f.write(f"  - Yield Value: {target.item()}\n")
 
-    print("  ✅ Sample data written to `data_verification_sample.log`.")
+    print("  ✅ Detailed sample report written to `data_verification_sample.log`.")
 
 
 if __name__ == "__main__":
