@@ -110,4 +110,5 @@ class Model(nn.Module):
         # 3. 回归头
         prediction = self.regression_head(final_output)
 
-        return prediction, self.aux_loss
+        # 返回 expert_indices 以便在 exp_yield_regression.py 中进行诊断
+        return prediction, self.aux_loss, expert_indices

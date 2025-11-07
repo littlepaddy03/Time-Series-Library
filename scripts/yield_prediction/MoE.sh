@@ -20,7 +20,7 @@ python -u run.py \
   --dropout 0.1 \
   --batch_size 128 \
   --learning_rate 0.001 \
-  --train_epochs 10 \
+  --train_epochs 5 \
   --patience 3 \
   --static_feat_dim 65 \
   --head_mlp_dim 128 \

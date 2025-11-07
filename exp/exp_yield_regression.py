@@ -51,7 +51,7 @@ class Exp_Yield_Regression(Exp_Basic):
                 batch_y = batch_y.float().to(self.device)
 
                 if self.args.model == 'MoE_Regression':
-                    outputs, _ = self.model(batch_x, batch_x_static)
+                    outputs, _, _ = self.model(batch_x, batch_x_static)
                 else:
                     outputs = self.model(batch_x, batch_x_static)
 
@@ -89,6 +89,10 @@ class Exp_Yield_Regression(Exp_Basic):
             iter_count = 0
             train_loss = []
 
+            # 专门为 MoE 准备一个计数器
+            if self.args.model == 'MoE_Regression':
+                expert_counts = torch.zeros(self.args.n_experts, dtype=torch.long).to(self.device)
+
             self.model.train()
             epoch_time = time.time()
             for i, (batch_x, batch_x_static, batch_y) in enumerate(train_loader):
@@ -100,8 +104,11 @@ class Exp_Yield_Regression(Exp_Basic):
                 batch_y = batch_y.float().to(self.device)
 
                 if self.args.model == 'MoE_Regression':
-                    outputs, aux_loss = self.model(batch_x, batch_x_static)
+                    outputs, aux_loss, expert_indices = self.model(batch_x, batch_x_static)
                     loss = criterion(outputs, batch_y) + aux_loss
+
+                    # 更新专家计数
+                    expert_counts.index_add_(0, expert_indices, torch.ones_like(expert_indices, dtype=torch.long))
                 else:
                     outputs = self.model(batch_x, batch_x_static)
                     loss = criterion(outputs, batch_y)
@@ -129,6 +136,13 @@ class Exp_Yield_Regression(Exp_Basic):
             self.writer.add_scalar('Loss/train_epoch', train_loss, epoch)
             self.writer.add_scalar('Loss/val', vali_loss, epoch)
             self.writer.add_scalar('R2/val', vali_r2, epoch)
+
+            # 记录 MoE 专家使用情况
+            if self.args.model == 'MoE_Regression':
+                print(f"Expert utilization for epoch {epoch + 1}: {expert_counts.cpu().numpy()}")
+                for i in range(self.args.n_experts):
+                    self.writer.add_scalar(f'Expert_Usage/expert_{i}', expert_counts[i], epoch)
+
 
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss))
@@ -161,7 +175,7 @@ class Exp_Yield_Regression(Exp_Basic):
                 batch_y = batch_y.float().to(self.device)
 
                 if self.args.model == 'MoE_Regression':
-                    outputs, _ = self.model(batch_x, batch_x_static)
+                    outputs, _, _ = self.model(batch_x, batch_x_static)
                 else:
                     outputs = self.model(batch_x, batch_x_static)
 
