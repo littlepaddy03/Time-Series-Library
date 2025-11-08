@@ -20,11 +20,12 @@ python -u run.py \
   --dropout 0.1 \
   --batch_size 128 \
   --learning_rate 0.001 \
-  --train_epochs 10 \
+  --train_epochs 30 \
   --patience 3 \
   --static_feat_dim 65 \
   --head_mlp_dim 128 \
   --n_experts 8 \
-  --aux_loss_weight 0.01 \
+  --aux_loss_weight 0.1 \
   --des 'Exp' \
-  --itr 1
+  --itr 1 \
+  --regions 'us'
