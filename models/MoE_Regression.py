@@ -5,7 +5,7 @@ from models.PatchTST_Regression import PatchTST_backbone
 
 class GatingNetwork(nn.Module):
     """
-    门控网络: 根据静态特征决定将样本路由到哪个专家。
+    门控网络: 根据动态和静态特征决定将样本路由到哪个专家。
     """
     def __init__(self, input_dim, num_experts, top_k=1):
         super(GatingNetwork, self).__init__()
@@ -25,35 +25,28 @@ class GatingNetwork(nn.Module):
 
         return sparse_gates, top_k_indices.squeeze()
 
-class Expert(nn.Module):
-    """
-    专家网络: 一个完整的 PatchTST backbone。
-    """
-    def __init__(self, configs):
-        super(Expert, self).__init__()
-        self.backbone = PatchTST_backbone(configs)
-
-    def forward(self, x):
-        # (B, L, C) -> (B, n_vars, N, D)
-        time_series_repr = self.backbone(x)
-        # (B, n_vars, N, D) -> (B, D)
-        # Average over n_vars and take the last patch
-        return time_series_repr.mean(dim=1)[:, -1, :]
-
 class Model(nn.Module):
     """
     第4章模型: 混合专家 (MoE) 回归模型 (参考 Switch Transformer)
+    - 使用共享的 Backbone 提取时序特征
+    - 门控网络同时使用时序和静态特征
     """
     def __init__(self, configs):
         super(Model, self).__init__()
         self.num_experts = configs.n_experts
         self.aux_loss_weight = configs.aux_loss_weight
+        self.d_model = configs.d_model
+
+        # 0. Shared Backbone
+        self.backbone = PatchTST_backbone(configs)
 
         # 1. Gating Network
-        self.gating = GatingNetwork(configs.static_feat_dim, self.num_experts)
+        # The input now includes both time-series (d_model) and static features
+        gating_input_dim = configs.d_model + configs.static_feat_dim
+        self.gating = GatingNetwork(gating_input_dim, self.num_experts)
 
-        # 2. Expert Networks
-        self.experts = nn.ModuleList([Expert(configs) for _ in range(self.num_experts)])
+        # 2. Expert Networks (Simplified to simple Linear layers)
+        self.experts = nn.ModuleList([nn.Linear(configs.d_model, configs.d_model) for _ in range(self.num_experts)])
 
         # 3. Regression Head
         self.regression_head = nn.Sequential(
@@ -70,41 +63,38 @@ class Model(nn.Module):
 
         batch_size, _, _ = x_dynamic.shape
 
-        # 1. Gating: 获取路由权重和决策
-        gates, expert_indices = self.gating(x_static) # gates: (B, N_experts), expert_indices: (B,)
+        # 0. Shared Backbone: Extract time-series features
+        # (B, L, C) -> (B, n_vars, N, D)
+        ts_repr = self.backbone(x_dynamic)
+        # (B, n_vars, N, D) -> (B, D)
+        # Average over n_vars and take the last patch's representation
+        ts_embedding = ts_repr.mean(dim=1)[:, -1, :]
+
+        # 1. Gating: Combine features and get routing decisions
+        # We detach the time-series embedding to prevent the gating network's loss from affecting the backbone's training
+        gating_input = torch.cat((ts_embedding.detach(), x_static), dim=1)
+        gates, expert_indices = self.gating(gating_input) # gates: (B, N_experts), expert_indices: (B,)
 
         # --- 计算负载均衡损失 (Load Balancing Loss) ---
-        # f_i: 每个专家处理的样本比例
-        # P_i: 路由到每个专家的概率总和
-
-        samples_per_expert = F.one_hot(expert_indices, self.num_experts).float() # (B, N_experts)
-        fraction_samples_per_expert = samples_per_expert.mean(dim=0) # f_i
-
-        prob_per_expert = gates.mean(dim=0) # P_i
-
-        # L_aux = N * sum(f_i * P_i)
+        samples_per_expert = F.one_hot(expert_indices, self.num_experts).float()
+        fraction_samples_per_expert = samples_per_expert.mean(dim=0)
+        prob_per_expert = gates.mean(dim=0)
         load_balancing_loss = self.num_experts * torch.sum(fraction_samples_per_expert * prob_per_expert)
-
         self.aux_loss = self.aux_loss_weight * load_balancing_loss
 
         # --- 分发到专家 (Dispatch to Experts) ---
-        final_output = torch.zeros(batch_size, self.experts[0].backbone.d_model).to(x_dynamic.device)
+        final_output = torch.zeros(batch_size, self.d_model).to(x_dynamic.device)
 
-        # 将门控权重应用到专家的输出
         for i in range(self.num_experts):
             idx = torch.where(expert_indices == i)[0]
 
             if idx.numel() > 0:
-                expert_input = x_dynamic[idx]
+                expert_input = ts_embedding[idx]
                 expert_output = self.experts[i](expert_input)
 
-                # 获取对应样本的门控权重
                 gate_scores = gates[idx, i].unsqueeze(1)
-
-                # 加权输出
                 weighted_output = expert_output * gate_scores
 
-                # 将结果放回原位
                 final_output.index_add_(0, idx, weighted_output)
 
         # 3. 回归头
