@@ -27,4 +27,5 @@ python -u run.py \
   --n_experts 8 \
   --aux_loss_weight 0.1 \
   --des 'Exp' \
-  --itr 1
+  --itr 1 \
+  --regions 'us'
