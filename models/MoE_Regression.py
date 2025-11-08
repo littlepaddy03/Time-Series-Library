@@ -1,104 +1,102 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from models.PatchTST_Regression import PatchTST_backbone
-
-class GatingNetwork(nn.Module):
-    """
-    门控网络: 根据动态和静态特征决定将样本路由到哪个专家。
-    """
-    def __init__(self, input_dim, num_experts, top_k=1):
-        super(GatingNetwork, self).__init__()
-        self.top_k = top_k
-        self.layer = nn.Linear(input_dim, num_experts)
-
-    def forward(self, x):
-        logits = self.layer(x)
-        # 使用 softmax 获取路由权重
-        gates = F.softmax(logits, dim=1)
-        # 选择 top_k 个专家
-        top_k_gates, top_k_indices = gates.topk(self.top_k, dim=1)
-
-        # 创建一个稀疏的路由掩码
-        zeros = torch.zeros_like(gates)
-        sparse_gates = zeros.scatter(1, top_k_indices, top_k_gates)
-
-        return sparse_gates, top_k_indices.squeeze()
+from layers.Transformer_EncDec import Encoder, EncoderLayer, ConvLayer
+from layers.SelfAttention_Family import FullAttention, AttentionLayer
+from models.MoE_layers import MoE_EncoderLayer
 
 class Model(nn.Module):
     """
-    第4章模型: 混合专家 (MoE) 回归模型 (参考 Switch Transformer)
-    - 使用共享的 Backbone 提取时序特征
-    - 门控网络同时使用时序和静态特征
+    Switch Transformer (MoE) for Yield Regression.
+    Replaces the FFN layers in PatchTST with MoE layers.
     """
     def __init__(self, configs):
         super(Model, self).__init__()
-        self.num_experts = configs.n_experts
-        self.aux_loss_weight = configs.aux_loss_weight
+        self.pred_len = configs.pred_len
+        self.seq_len = configs.seq_len
         self.d_model = configs.d_model
+        self.patch_len = configs.patch_len
+        self.stride = configs.stride
+        self.n_experts = configs.n_experts
+        self.aux_loss_weight = configs.aux_loss_weight
 
-        # 0. Shared Backbone
-        self.backbone = PatchTST_backbone(configs)
+        # Patching
+        self.patch_num = int((configs.seq_len - self.patch_len) / self.stride + 1)
+        self.padding_patch = nn.ReplicationPad1d((0, self.stride))
 
-        # 1. Gating Network
-        # The input now includes both time-series (d_model) and static features
-        gating_input_dim = configs.d_model + configs.static_feat_dim
-        self.gating = GatingNetwork(gating_input_dim, self.num_experts)
+        # Backbone
+        self.patch_embedding = nn.Linear(self.patch_len, self.d_model)
+        self.pos_embedding = nn.Parameter(torch.randn(1, configs.n_vars, self.patch_num, self.d_model))
+        self.dropout = nn.Dropout(configs.dropout)
 
-        # 2. Expert Networks (Simplified to simple Linear layers)
-        self.experts = nn.ModuleList([nn.Linear(configs.d_model, configs.d_model) for _ in range(self.num_experts)])
+        # MoE Encoder
+        self.encoder = Encoder(
+            [
+                MoE_EncoderLayer(
+                    AttentionLayer(
+                        FullAttention(False, configs.factor, attention_dropout=configs.dropout,
+                                      output_attention=configs.output_attention), configs.d_model, configs.n_heads),
+                    configs.d_model,
+                    configs.d_ff,
+                    n_experts=self.n_experts,
+                    dropout=configs.dropout,
+                    activation=configs.activation,
+                    aux_loss_weight=self.aux_loss_weight
+                ) for l in range(configs.e_layers)
+            ],
+            norm_layer=torch.nn.LayerNorm(configs.d_model)
+        )
 
-        # 3. Regression Head
+        # Regression Head
+        self.static_feat_dim = configs.static_feat_dim
+        # The flattened time-series representation will be of size n_vars * patch_num * d_model
+        head_input_dim = configs.n_vars * self.patch_num * self.d_model + self.static_feat_dim
+
         self.regression_head = nn.Sequential(
-            nn.Linear(configs.d_model, configs.head_mlp_dim),
+            nn.Linear(head_input_dim, configs.head_mlp_dim),
             nn.ReLU(),
             nn.Dropout(configs.dropout),
             nn.Linear(configs.head_mlp_dim, 1)
         )
 
     def forward(self, x_dynamic, x_static):
-        # Replace NaNs with 0
+        # x_dynamic: [B, L, C]
+        # x_static: [B, S]
         x_dynamic = torch.nan_to_num(x_dynamic)
         x_static = torch.nan_to_num(x_static)
 
-        batch_size, _, _ = x_dynamic.shape
+        B, L, C = x_dynamic.shape
+        x = x_dynamic.permute(0, 2, 1) # B, C, L
 
-        # 0. Shared Backbone: Extract time-series features
-        # (B, L, C) -> (B, n_vars, N, D)
-        ts_repr = self.backbone(x_dynamic)
-        # (B, n_vars, N, D) -> (B, D)
-        # Average over n_vars and take the last patch's representation
-        ts_embedding = ts_repr.mean(dim=1)[:, -1, :]
+        # Patching
+        x = self.padding_patch(x)
+        x = x.unfold(dimension=-1, size=self.patch_len, step=self.stride) # B, C, N, P
+        x = x.permute(0, 1, 3, 2) # B, C, P, N
 
-        # 1. Gating: Combine features and get routing decisions
-        # We detach the time-series embedding to prevent the gating network's loss from affecting the backbone's training
-        gating_input = torch.cat((ts_embedding.detach(), x_static), dim=1)
-        gates, expert_indices = self.gating(gating_input) # gates: (B, N_experts), expert_indices: (B,)
+        # Embedding
+        enc_in = self.patch_embedding(x) # B, C, N, D
+        enc_in = enc_in + self.pos_embedding
+        enc_in = self.dropout(enc_in)
 
-        # --- 计算负载均衡损失 (Load Balancing Loss) ---
-        samples_per_expert = F.one_hot(expert_indices, self.num_experts).float()
-        fraction_samples_per_expert = samples_per_expert.mean(dim=0)
-        prob_per_expert = gates.mean(dim=0)
-        load_balancing_loss = self.num_experts * torch.sum(fraction_samples_per_expert * prob_per_expert)
-        self.aux_loss = self.aux_loss_weight * load_balancing_loss
+        # Encoder
+        # Reshape for encoder: [B*C, N, D]
+        enc_in = enc_in.reshape(-1, self.patch_num, self.d_model)
+        enc_out, attns = self.encoder(enc_in) # [B*C, N, D]
 
-        # --- 分发到专家 (Dispatch to Experts) ---
-        final_output = torch.zeros(batch_size, self.d_model).to(x_dynamic.device)
+        # Reshape back: [B, C, N, D]
+        enc_out = enc_out.reshape(B, C, self.patch_num, self.d_model)
 
-        for i in range(self.num_experts):
-            idx = torch.where(expert_indices == i)[0]
+        # --- Aggregate auxiliary losses from all MoE layers ---
+        total_aux_loss = 0
+        for layer in self.encoder.layers:
+            total_aux_loss += layer.aux_loss
 
-            if idx.numel() > 0:
-                expert_input = ts_embedding[idx]
-                expert_output = self.experts[i](expert_input)
+        # Flatten time-series features
+        ts_repr_flat = enc_out.reshape(B, -1) # B, C*N*D
 
-                gate_scores = gates[idx, i].unsqueeze(1)
-                weighted_output = expert_output * gate_scores
+        # Combine with static features
+        combined_features = torch.cat([ts_repr_flat, x_static], dim=1)
 
-                final_output.index_add_(0, idx, weighted_output)
+        # Regression
+        prediction = self.regression_head(combined_features)
 
-        # 3. 回归头
-        prediction = self.regression_head(final_output)
-
-        # 返回 expert_indices 以便在 exp_yield_regression.py 中进行诊断
-        return prediction, self.aux_loss, expert_indices
+        return prediction, total_aux_loss, None # No single expert_indices to return
