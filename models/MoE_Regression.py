@@ -14,8 +14,8 @@ class Model(nn.Module):
         self.pred_len = configs.pred_len
         self.seq_len = configs.seq_len
         self.d_model = configs.d_model
-        self.patch_len = configs.patch_len
-        self.stride = configs.stride
+        self.patch_len = getattr(configs, 'patch_len', 16)
+        self.stride = getattr(configs, 'stride', 8)
         self.n_experts = configs.n_experts
         self.aux_loss_weight = configs.aux_loss_weight
 
