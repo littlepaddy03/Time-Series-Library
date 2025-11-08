@@ -107,8 +107,9 @@ class Exp_Yield_Regression(Exp_Basic):
                     outputs, aux_loss, expert_indices = self.model(batch_x, batch_x_static)
                     loss = criterion(outputs, batch_y) + aux_loss
 
-                    # 更新专家计数
-                    expert_counts.index_add_(0, expert_indices, torch.ones_like(expert_indices, dtype=torch.long))
+                    # 更新专家计数 (如果模型返回了 expert_indices)
+                    if expert_indices is not None:
+                        expert_counts.index_add_(0, expert_indices, torch.ones_like(expert_indices, dtype=torch.long))
                 else:
                     outputs = self.model(batch_x, batch_x_static)
                     loss = criterion(outputs, batch_y)
