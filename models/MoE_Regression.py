@@ -75,7 +75,7 @@ class Model(PatchTST_Base_Model):
 
         # --- Aggregate auxiliary losses from all MoE layers ---
         total_aux_loss = 0
-        for layer in self.encoder.layers:
+        for layer in self.encoder.attn_layers:
             if hasattr(layer, 'aux_loss'):
                 total_aux_loss += layer.aux_loss
 
