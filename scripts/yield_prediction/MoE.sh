@@ -25,7 +25,7 @@ python -u run.py \
   --static_feat_dim 65 \
   --head_mlp_dim 128 \
   --n_experts 8 \
-  --aux_loss_weight 0.1 \
+  --aux_loss_weight 0.2 \
   --des 'Exp' \
   --itr 1 \
   --regions 'us'
