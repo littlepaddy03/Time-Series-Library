@@ -87,7 +87,7 @@ class MoE_EncoderLayer(nn.Module):
 
         self.aux_loss = 0
 
-    def forward(self, x, attn_mask=None):
+    def forward(self, x, attn_mask=None, **kwargs):
         # 1. Multi-Head Attention
         new_x, attn = self.attention(
             x, x, x,
