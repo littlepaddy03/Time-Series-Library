@@ -9,66 +9,69 @@ class Model(PatchTST_Base_Model):
     """
     Switch Transformer (MoE) for Yield Regression.
     This model inherits from the original PatchTST model and replaces its encoder
-    with an MoE-based encoder.
+    with an MoE-based encoder. It aligns the regression head design with the
+    successful baseline model (PatchTST_Regression).
     """
     def __init__(self, configs):
         # Initialize the base PatchTST model.
-        # It handles all configurations, patching, and embedding layers.
         super().__init__(configs)
+
+        # --- Defensively get all required parameters from configs ---
+        d_model = configs.d_model
+        n_heads = configs.n_heads
+        d_ff = configs.d_ff
+        e_layers = configs.e_layers
+        dropout = configs.dropout
+        activation = configs.activation
+        output_attention = getattr(configs, 'output_attention', False)
+        factor = getattr(configs, 'factor', 1)
+        n_experts = getattr(configs, 'n_experts', 8)
+        aux_loss_weight = getattr(configs, 'aux_loss_weight', 0.1)
 
         # --- Override the Encoder with our MoE Encoder ---
         self.encoder = Encoder(
             [
                 MoE_EncoderLayer(
                     AttentionLayer(
-                        FullAttention(False, getattr(configs, 'factor', 1), attention_dropout=configs.dropout,
-                                      output_attention=configs.output_attention), configs.d_model, configs.n_heads),
-                    configs.d_model,
-                    configs.d_ff,
-                    n_experts=getattr(configs, 'n_experts', 8),
-                    dropout=configs.dropout,
-                    activation=configs.activation,
-                    aux_loss_weight=getattr(configs, 'aux_loss_weight', 0.1)
-                ) for l in range(configs.e_layers)
+                        FullAttention(False, factor, attention_dropout=dropout,
+                                      output_attention=output_attention), d_model, n_heads),
+                    d_model,
+                    d_ff,
+                    n_experts=n_experts,
+                    dropout=dropout,
+                    activation=activation,
+                    aux_loss_weight=aux_loss_weight
+                ) for l in range(e_layers)
             ],
-            norm_layer=torch.nn.LayerNorm(configs.d_model)
+            norm_layer=torch.nn.LayerNorm(d_model)
         )
 
-        # --- Define the Regression Head ---
-        # The base model's head is for forecasting, we need a custom one for regression.
-        self.static_feat_dim = getattr(configs, 'static_feat_dim', 0)
+        # --- Define the Regression Head (aligning with PatchTST_Regression baseline) ---
+        static_feat_dim = getattr(configs, 'static_feat_dim', 0)
+        head_mlp_dim = getattr(configs, 'head_mlp_dim', 128)
 
-        # Calculate the flattened dimension from the encoder output
-        patch_len = getattr(configs, 'patch_len', 16)
-        stride = getattr(configs, 'stride', 8)
-        patch_num = int((configs.seq_len - patch_len) / stride + 1)
-
-        # The flattened time-series representation will be of size n_vars * patch_num * d_model
-        ts_repr_dim = configs.enc_in * patch_num * configs.d_model
-
-        head_input_dim = ts_repr_dim + self.static_feat_dim
+        # The input to the head will be the pooled time-series representation + static features.
+        head_input_dim = d_model + static_feat_dim
 
         self.regression_head = nn.Sequential(
-            nn.Linear(head_input_dim, configs.head_mlp_dim),
+            nn.Linear(head_input_dim, head_mlp_dim),
             nn.ReLU(),
-            nn.Dropout(configs.dropout),
-            nn.Linear(configs.head_mlp_dim, 1)
+            nn.Dropout(dropout),
+            nn.Linear(head_mlp_dim, 1)
         )
 
     def forward(self, x_dynamic, x_static):
-        # x_dynamic: [B, L, C]
-        # x_static: [B, S]
         x_dynamic = torch.nan_to_num(x_dynamic)
         x_static = torch.nan_to_num(x_static)
 
         B, L, C = x_dynamic.shape
 
         # --- Use the base model's patching and embedding ---
-        x_dynamic = x_dynamic.permute(0, 2, 1)  # B, C, L
-        enc_in, n_vars = self.patch_embedding(x_dynamic) # enc_in: [B * C, N, D]
+        x_dynamic = x_dynamic.permute(0, 2, 1)
+        enc_in, n_vars = self.patch_embedding(x_dynamic)
 
         # --- Use our overridden MoE Encoder ---
-        enc_out, attns = self.encoder(enc_in) # enc_out: [B * C, N, D]
+        enc_out, attns = self.encoder(enc_in)
 
         # --- Aggregate auxiliary losses from all MoE layers ---
         total_aux_loss = 0
@@ -76,18 +79,17 @@ class Model(PatchTST_Base_Model):
             if hasattr(layer, 'aux_loss'):
                 total_aux_loss += layer.aux_loss
 
-        # --- Prepare for Regression Head ---
+        # --- Pooling & Feature Combination (aligning with PatchTST_Regression baseline) ---
         # Reshape back to [B, C, N, D]
         enc_out = enc_out.reshape(B, n_vars, -1, self.d_model)
 
-        # Flatten time-series features
-        ts_repr_flat = enc_out.reshape(B, -1) # B, C*N*D
+        # Pool the time-series representation
+        ts_repr_pooled = enc_out.mean(dim=1)[:, -1, :] # [B, D]
 
         # Combine with static features
-        combined_features = torch.cat([ts_repr_flat, x_static], dim=1)
+        combined_features = torch.cat([ts_repr_pooled, x_static], dim=1)
 
-        # Regression
+        # --- Regression ---
         prediction = self.regression_head(combined_features)
 
-        # We don't have a single set of expert indices to return anymore
         return prediction, total_aux_loss, None
