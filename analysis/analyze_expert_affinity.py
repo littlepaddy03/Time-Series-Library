@@ -67,13 +67,9 @@ def analyze_expert_affinity(affinity_data_path, output_dir):
 
     df = pd.concat([static_df, affinity_df], axis=1)
 
-    # --- Data Diagnosis Step ---
-    print("\n--- Data Diagnosis for 'crop_id' ---")
-    print("Unique values found in 'crop_id' column:")
-    print(df['crop_id'].unique())
-    print("\nValue counts for 'crop_id':")
-    print(df['crop_id'].value_counts())
-    print("-------------------------------------\n")
+    # Note: This script assumes that the 'static_features' in the .npz file are the
+    # original, un-normalized features, as provided by the updated data pipeline.
+    # The 'crop_id' should therefore be discrete values (e.g., 1.0, 2.0).
 
     # --- Visualization 1: Crop Type vs. Expert Affinity ---
     crop_id_map = {1.0: 'Maize', 2.0: 'Rice', 3.0: 'Soybean', 4.0: 'Wheat'}
@@ -81,6 +77,12 @@ def analyze_expert_affinity(affinity_data_path, output_dir):
 
     crop_affinity = df.groupby('crop_name')[affinity_cols].mean()
 
+    # --- Save the affinity matrix to CSV ---
+    csv_path = os.path.join(output_dir, 'crop_type_vs_expert_affinity.csv')
+    crop_affinity.to_csv(csv_path)
+    print(f"Saved crop affinity matrix to {csv_path}")
+
+    # --- Generate and save the heatmap ---
     plt.figure(figsize=(12, 8))
     sns.heatmap(crop_affinity, annot=True, cmap='viridis', fmt=".3f")
     plt.title('Mean Expert Affinity per Crop Type', fontsize=16)
