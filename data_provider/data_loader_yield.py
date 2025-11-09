@@ -138,18 +138,21 @@ class ShardedYieldDataset(Dataset):
         region, local_idx = self.global_index[global_idx]
         
         dynamic_features = self.data_files[region]['dynamic'][local_idx]
-        static_features = self.data_files[region]['static'][local_idx]
+        static_features_orig = self.data_files[region]['static'][local_idx]
         target = self.data_files[region]['targets'][local_idx]
 
-        dynamic_features = torch.FloatTensor(dynamic_features)
-        static_features = torch.FloatTensor(static_features)
-        target = torch.FloatTensor(target)
+        dynamic_features_tensor = torch.FloatTensor(dynamic_features)
+        static_features_tensor = torch.FloatTensor(static_features_orig)
+        target_tensor = torch.FloatTensor(target)
+
+        # Keep a copy of the original static features for analysis purposes
+        unnormalized_static_features = static_features_tensor.clone()
 
         if self.scaler:
-            dynamic_features = (dynamic_features - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
-            static_features = (static_features - self.scaler['static_mean']) / (self.scaler['static_std'] + 1e-8)
+            dynamic_features_tensor = (dynamic_features_tensor - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
+            static_features_tensor = (static_features_tensor - self.scaler['static_mean']) / (self.scaler['static_std'] + 1e-8)
 
-        return dynamic_features, static_features, target
+        return dynamic_features_tensor, static_features_tensor, target_tensor, unnormalized_static_features
 
 def data_provider_yield(args, flag):
     # This provider function now returns all datasets and dataloaders at once when flag is 'train'

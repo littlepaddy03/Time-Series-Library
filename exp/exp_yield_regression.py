@@ -40,7 +40,7 @@ class Exp_Yield_Regression(Exp_Basic):
         return criterion
 
     def _process_one_batch(self, batch_data):
-        batch_x, batch_x_static, batch_y = batch_data
+        batch_x, batch_x_static, batch_y, batch_x_static_unnormalized = batch_data
         batch_x = batch_x.float().to(self.device)
         batch_x_static = batch_x_static.float().to(self.device)
         batch_y = batch_y.float().to(self.device)
@@ -50,17 +50,17 @@ class Exp_Yield_Regression(Exp_Basic):
         else:
             outputs, aux_loss, affinities = self.model(batch_x, batch_x_static), None, None
 
-        return outputs, batch_y, aux_loss, affinities, batch_x_static
+        return outputs, batch_y, aux_loss, affinities, batch_x_static_unnormalized
 
     def vali(self, vali_loader, criterion):
         total_loss = []
         preds, trues = [], []
-        static_features, expert_affinities = [], []
+        unnormalized_static_features_list, expert_affinities_list = [], []
 
         self.model.eval()
         with torch.no_grad():
             for i, batch_data in enumerate(vali_loader):
-                outputs, batch_y, _, affinities, batch_x_static = self._process_one_batch(batch_data)
+                outputs, batch_y, _, affinities, unnormalized_static_features = self._process_one_batch(batch_data)
 
                 loss = criterion(outputs, batch_y)
                 total_loss.append(loss.item())
@@ -68,8 +68,8 @@ class Exp_Yield_Regression(Exp_Basic):
                 preds.append(outputs.cpu())
                 trues.append(batch_y.cpu())
                 if affinities is not None:
-                    static_features.append(batch_x_static.cpu())
-                    expert_affinities.append(affinities.cpu())
+                    unnormalized_static_features_list.append(unnormalized_static_features.cpu())
+                    expert_affinities_list.append(affinities.cpu())
 
         total_loss = np.average(total_loss)
         preds = torch.cat(preds, 0)
@@ -78,14 +78,14 @@ class Exp_Yield_Regression(Exp_Basic):
         r2 = r2_score(trues.numpy(), preds.numpy())
         mae, mse, rmse, _, _ = metric(preds.numpy(), trues.numpy())
 
-        if len(expert_affinities) > 0:
-            static_features = np.concatenate(static_features, axis=0)
-            expert_affinities = np.concatenate(expert_affinities, axis=0)
-        else:
-            static_features, expert_affinities = None, None
+        affinity_data = None
+        if len(expert_affinities_list) > 0:
+            final_static_features = np.concatenate(unnormalized_static_features_list, axis=0)
+            final_expert_affinities = np.concatenate(expert_affinities_list, axis=0)
+            affinity_data = (final_static_features, final_expert_affinities)
 
         self.model.train()
-        return total_loss, r2, mae, mse, rmse, (static_features, expert_affinities)
+        return total_loss, r2, mae, mse, rmse, affinity_data
 
     def train(self, setting):
         train_data, train_loader, _, vali_loader, _, test_loader = self._get_data(flag='train')
@@ -179,18 +179,18 @@ class Exp_Yield_Regression(Exp_Basic):
 
     def test(self, setting, test_loader):
         preds, trues = [], []
-        static_features, expert_affinities = [], []
+        unnormalized_static_features_list, expert_affinities_list = [], []
         
         self.model.eval()
         with torch.no_grad():
             for i, batch_data in enumerate(test_loader):
-                outputs, batch_y, _, affinities, batch_x_static = self._process_one_batch(batch_data)
+                outputs, batch_y, _, affinities, unnormalized_static_features = self._process_one_batch(batch_data)
 
                 preds.append(outputs.cpu())
                 trues.append(batch_y.cpu())
                 if affinities is not None:
-                    static_features.append(batch_x_static.cpu())
-                    expert_affinities.append(affinities.cpu())
+                    unnormalized_static_features_list.append(unnormalized_static_features.cpu())
+                    expert_affinities_list.append(affinities.cpu())
 
         preds = torch.cat(preds, 0)
         trues = torch.cat(trues, 0)
@@ -214,9 +214,9 @@ class Exp_Yield_Regression(Exp_Basic):
         np.save(os.path.join(results_folder_path, 'true.npy'), trues.numpy())
 
         # --- Save test affinities ---
-        if len(expert_affinities) > 0:
-            test_static_features = np.concatenate(static_features, axis=0)
-            test_expert_affinities = np.concatenate(expert_affinities, axis=0)
+        if len(expert_affinities_list) > 0:
+            test_static_features = np.concatenate(unnormalized_static_features_list, axis=0)
+            test_expert_affinities = np.concatenate(expert_affinities_list, axis=0)
             np.savez_compressed(os.path.join(results_folder_path, 'test_affinities.npz'),
                                 static_features=test_static_features,
                                 expert_affinities=test_expert_affinities)
