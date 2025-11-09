@@ -75,17 +75,22 @@ class Model(PatchTST_Base_Model):
             if hasattr(layer, 'gate_prob') and layer.gate_prob is not None:
                 all_gate_probs.append(layer.gate_prob)
 
-        # --- Calculate Sample Affinity Score ---
+        # --- Calculate Per-Layer Sample Affinity Score ---
         if len(all_gate_probs) > 0:
-            # Stack and sum gate probabilities across layers
-            # Each gate_prob is [B*C*N, n_experts]
-            summed_gate_probs = torch.stack(all_gate_probs, dim=0).sum(dim=0)
+            # Stack gate probabilities across layers. Shape: [e_layers, B*C*N, n_experts]
+            stacked_gate_probs = torch.stack(all_gate_probs, dim=0)
 
-            # Reshape to [B, C*N, n_experts]
-            token_level_affinity = summed_gate_probs.reshape(B, -1, self.n_experts)
+            # Reshape to bring Batch dimension to the front. Shape: [e_layers, B, C*N, n_experts]
+            layer_token_affinity = stacked_gate_probs.reshape(
+                len(all_gate_probs), B, -1, self.n_experts
+            )
 
-            # Average across all tokens (patches) for each sample
-            sample_affinity = token_level_affinity.mean(dim=1) # [B, n_experts]
+            # Average across all tokens (patches) for each sample, keeping the layer dimension.
+            # Shape: [e_layers, B, n_experts]
+            layer_sample_affinity = layer_token_affinity.mean(dim=2)
+
+            # Permute to get the desired [B, e_layers, n_experts] shape
+            sample_affinity = layer_sample_affinity.permute(1, 0, 2)
         else:
             sample_affinity = None
 

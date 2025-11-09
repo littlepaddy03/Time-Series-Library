@@ -22,7 +22,7 @@ python -u run.py \
   --learning_rate 0.001 \
   --train_epochs 10 \
   --patience 3 \
-  --static_feat_dim 65 \
+  --static_feat_dim 66 \
   --head_mlp_dim 128 \
   --des 'Exp' \
   --itr 1

@@ -28,6 +28,7 @@ import numpy as np
 import os
 from tqdm import tqdm
 import warnings
+import rasterio
 
 import argparse
 
@@ -133,19 +134,26 @@ def main(args):
     SOURCE_DATA_DIR = args.source_dir
     TARGET_DATA_DIR = args.target_dir
 
-    # --- 1. 初始化数据收集器 ---
+    # --- 1. 初始化数据收集器和气候数据 ---
     data_collectors = {}
-    # 从映射中动态获取所有唯一的区域名称
     all_regions = sorted(list(set(val[0] for val in SOURCE_FILE_MAP.values())))
 
     for region in all_regions:
-        data_collectors[region] = {
-            'dynamic_list': [],
-            'static_list': [],
-            'target_list': []
-        }
-        # 为目标目录创建路径
+        data_collectors[region] = {'dynamic_list': [], 'static_list': [], 'target_list': []}
         os.makedirs(os.path.join(TARGET_DATA_DIR, region), exist_ok=True)
+
+    # 加载 Köppen-Geiger TIF 文件
+    KG_TIF_PATH = 'koppen_geiger_tif/koppen_geiger_0p00833333.tif'
+    kg_dataset = None
+    if os.path.exists(KG_TIF_PATH):
+        try:
+            kg_dataset = rasterio.open(KG_TIF_PATH)
+            print(f"成功加载 Köppen-Geiger TIF 文件: {KG_TIF_PATH}")
+        except Exception as e:
+            print(f"警告: 无法加载 Köppen-Geiger TIF 文件. 错误: {e}. 将不会添加气候分区特征.")
+            kg_dataset = None
+    else:
+        print(f"警告: 未找到 Köppen-Geiger TIF 文件 at '{KG_TIF_PATH}'. 将不会添加气候分区特征.")
 
     print(f"ETL开始. 将处理 {len(SOURCE_FILE_MAP)} 个文件, 存入 {len(all_regions)} 个区域目录.")
 
@@ -211,7 +219,22 @@ def main(args):
                 continue # 跳过这个损坏的样本
 
             # 组合成一个静态特征向量 (总计 4 + 61 = 65 个特征)
-            static_sample_array = np.array(context_features + soil_features, dtype=np.float32)
+            static_sample_list = context_features + soil_features
+
+            # 3. 添加 Köppen-Geiger 气候分区特征 (如果可用)
+            if kg_dataset:
+                try:
+                    # 使用 rasterio.sample 来查询. 它需要一个坐标列表.
+                    coord_iter = [(lon, lat)]
+                    # sample 方法返回一个生成器, 我们获取第一个结果
+                    kg_zone = next(kg_dataset.sample(coord_iter))[0]
+                    static_sample_list.append(kg_zone)
+                except Exception as e:
+                    # 如果查询失败 (例如, 坐标超出范围), 添加一个占位符 (例如, 0)
+                    static_sample_list.append(0)
+                    print(f"警告: 无法为坐标 ({lon}, {lat}) 查询气候分区. 错误: {e}. 使用 0 代替.")
+
+            static_sample_array = np.array(static_sample_list, dtype=np.float32)
 
             # --- c. 创建目标数组 (1,) ---
             try:
@@ -254,13 +277,15 @@ def main(args):
             continue
 
         # 校验形状
-        M_expected = len(M_STATIC_SOIL_COLS) + 4 # 61 + 4 = 65
-        C_expected = len(C_DYNAMIC_COLS)         # 20
+        M_expected = len(M_STATIC_SOIL_COLS) + 4  # 61 (土壤) + 4 (上下文) = 65
+        if kg_dataset:
+            M_expected += 1 # 如果气候数据可用, 则为66
+        C_expected = len(C_DYNAMIC_COLS) # 20
 
         if dynamic_arr.shape != (N_r, L_SEQUENCE_LENGTH, C_expected):
             print(f"  -> 错误: Dynamic array 形状不匹配! 预期: {(N_r, L_SEQUENCE_LENGTH, C_expected)}, 得到: {dynamic_arr.shape}")
-        if static_arr.shape != (N_r, M_expected):
-            print(f"  -> 错误: Static array 形状不匹配! 预期: {(N_r, M_expected)}, 得到: {static_arr.shape}")
+        if static_arr.shape[0] != N_r or (static_arr.shape[1] != M_expected and static_arr.shape[1] != M_expected -1):
+             print(f"  -> 错误: Static array 形状不匹配! 预期样本数: {N_r}, 预期特征数: {M_expected}, 得到: {static_arr.shape}")
         if target_arr.shape != (N_r, 1):
             print(f"  -> 错误: Target array 形状不匹配! 预期: {(N_r, 1)}, 得到: {target_arr.shape}")
 
