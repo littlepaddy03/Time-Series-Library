@@ -1,6 +1,7 @@
 from data_provider.data_loader_yield import data_provider_yield
 from exp.exp_basic import Exp_Basic
 from utils.tools import EarlyStopping, adjust_learning_rate
+from utils.metrics import metric
 from sklearn.metrics import r2_score
 import torch
 import torch.nn as nn
@@ -50,7 +51,7 @@ class Exp_Yield_Regression(Exp_Basic):
                 batch_x_static = batch_x_static.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
 
-                if self.args.model == 'MoE_Regression':
+                if 'MoE_Regression' in self.args.model:
                     outputs, _, _ = self.model(batch_x, batch_x_static)
                 else:
                     outputs = self.model(batch_x, batch_x_static)
@@ -63,10 +64,12 @@ class Exp_Yield_Regression(Exp_Basic):
         total_loss = np.average(total_loss)
         preds = torch.cat(preds, 0)
         trues = torch.cat(trues, 0)
-        r2 = r2_score(trues, preds)
+
+        r2 = r2_score(trues.numpy(), preds.numpy())
+        mae, mse, rmse, _, _ = metric(preds.numpy(), trues.numpy())
 
         self.model.train()
-        return total_loss, r2
+        return total_loss, r2, mae, mse, rmse
 
     def train(self, setting):
         train_data, train_loader, vali_data, vali_loader, test_data, test_loader = self._get_data(flag='train')
@@ -89,8 +92,7 @@ class Exp_Yield_Regression(Exp_Basic):
             iter_count = 0
             train_loss = []
 
-            # 专门为 MoE 准备一个计数器
-            if self.args.model == 'MoE_Regression':
+            if 'MoE_Regression' in self.args.model:
                 expert_counts = torch.zeros(self.args.n_experts, dtype=torch.long).to(self.device)
 
             self.model.train()
@@ -103,11 +105,10 @@ class Exp_Yield_Regression(Exp_Basic):
                 batch_x_static = batch_x_static.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
 
-                if self.args.model == 'MoE_Regression':
+                if 'MoE_Regression' in self.args.model:
                     outputs, aux_loss, expert_indices = self.model(batch_x, batch_x_static)
-                    loss = criterion(outputs, batch_y) + aux_loss
+                    loss = criterion(outputs, batch_y) + (aux_loss if aux_loss is not None else 0)
 
-                    # 更新专家计数 (如果模型返回了 expert_indices)
                     if expert_indices is not None:
                         expert_counts.index_add_(0, expert_indices, torch.ones_like(expert_indices, dtype=torch.long))
                 else:
@@ -132,22 +133,25 @@ class Exp_Yield_Regression(Exp_Basic):
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
-            vali_loss, vali_r2 = self.vali(vali_data, vali_loader, criterion)
+            vali_loss, vali_r2, vali_mae, vali_mse, vali_rmse = self.vali(vali_data, vali_loader, criterion)
 
             self.writer.add_scalar('Loss/train_epoch', train_loss, epoch)
             self.writer.add_scalar('Loss/val', vali_loss, epoch)
             self.writer.add_scalar('R2/val', vali_r2, epoch)
+            self.writer.add_scalar('MAE/val', vali_mae, epoch)
+            self.writer.add_scalar('MSE/val', vali_mse, epoch)
+            self.writer.add_scalar('RMSE/val', vali_rmse, epoch)
 
-            # 记录 MoE 专家使用情况
-            if self.args.model == 'MoE_Regression':
-                print(f"Expert utilization for epoch {epoch + 1}: {expert_counts.cpu().numpy()}")
-                for i in range(self.args.n_experts):
-                    self.writer.add_scalar(f'Expert_Usage/expert_{i}', expert_counts[i], epoch)
-
+            if 'MoE_Regression' in self.args.model:
+                if expert_counts.sum() > 0:
+                    print(f"Expert utilization for epoch {epoch + 1}: {expert_counts.cpu().numpy()}")
+                    for i in range(self.args.n_experts):
+                        self.writer.add_scalar(f'Expert_Usage/expert_{i}', expert_counts[i], epoch)
 
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss))
-            print(f"Vali R2: {vali_r2:.4f}")
+            print(f"Vali R2: {vali_r2:.4f}, MAE: {vali_mae:.4f}, MSE: {vali_mse:.4f}, RMSE: {vali_rmse:.4f}")
+
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
@@ -158,7 +162,6 @@ class Exp_Yield_Regression(Exp_Basic):
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 
-        # Perform final test
         print("------ Final Test ------")
         self.test(test_loader)
 
@@ -175,7 +178,7 @@ class Exp_Yield_Regression(Exp_Basic):
                 batch_x_static = batch_x_static.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
 
-                if self.args.model == 'MoE_Regression':
+                if 'MoE_Regression' in self.args.model:
                     outputs, _, _ = self.model(batch_x, batch_x_static)
                 else:
                     outputs = self.model(batch_x, batch_x_static)
@@ -186,11 +189,21 @@ class Exp_Yield_Regression(Exp_Basic):
         preds = torch.cat(preds, 0)
         trues = torch.cat(trues, 0)
         
-        r2 = r2_score(trues, preds)
-        print(f'Test R2: {r2:.4f}')
+        r2 = r2_score(trues.numpy(), preds.numpy())
+        mae, mse, rmse, _, _ = metric(preds.numpy(), trues.numpy())
+
+        print(f'Test R2: {r2:.4f}, MAE: {mae:.4f}, MSE: {mse:.4f}, RMSE: {rmse:.4f}')
 
         if self.writer:
-            self.writer.add_scalar('R2/test', r2, 0) # Log test R2 at a single step
+            self.writer.add_scalar('R2/test', r2, 0)
+            self.writer.add_scalar('MAE/test', mae, 0)
+            self.writer.add_scalar('MSE/test', mse, 0)
+            self.writer.add_scalar('RMSE/test', rmse, 0)
             self.writer.close()
+
+        folder_path = os.path.join(self.args.checkpoints, self.args.model_id, 'metrics')
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+        np.save(os.path.join(folder_path, 'metrics.npy'), np.array([r2, mae, mse, rmse]))
 
         return
