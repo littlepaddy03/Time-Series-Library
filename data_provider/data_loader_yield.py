@@ -85,12 +85,15 @@ class ShardedYieldDataset(Dataset):
         else: self.indices = self.test_indices
 
     @staticmethod
-    def _calculate_scaler(train_dataset, data_files):
+    def _calculate_scaler(train_dataset, data_files, args):
         print("Calculating scaler on training data...")
 
-        static_sum = np.zeros(65, dtype=np.float64)
-        static_sq_sum = np.zeros(65, dtype=np.float64)
-        dynamic_sum = np.zeros(20, dtype=np.float64)
+        static_feat_dim = args.static_feat_dim
+        dynamic_feat_dim = args.enc_in
+
+        static_sum = np.zeros(static_feat_dim, dtype=np.float64)
+        static_sq_sum = np.zeros(static_feat_dim, dtype=np.float64)
+        dynamic_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
         dynamic_sq_sum = np.zeros(20, dtype=np.float64)
         non_zero_count = np.zeros(20, dtype=np.int64)
 
@@ -169,7 +172,7 @@ def data_provider_yield(args, flag):
     )
 
     # 2. Calculate scaler ONLY on the training set
-    scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset, initial_train_dataset.data_files)
+    scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset, initial_train_dataset.data_files, args)
     initial_train_dataset.scaler = scaler
 
     # 3. Create validation and test datasets, passing the scaler and pre-computed indices
