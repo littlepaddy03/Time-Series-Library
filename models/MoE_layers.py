@@ -30,27 +30,28 @@ class MoE_FFN(nn.Module):
         ])
 
         self.aux_loss = 0
+        self.gate_prob = None
 
     def forward(self, x):
         # x: [batch_size, patch_num, d_model]
         batch_size, seq_len, d_model = x.shape
-        x = x.reshape(-1, d_model) # [batch_size * patch_num, d_model]
+        x_flat = x.reshape(-1, d_model) # [batch_size * patch_num, d_model]
 
-        # Gate logits
-        gate_logits = self.gate(x) # [B*N, num_experts]
+        # Gate logits and probabilities
+        gate_logits = self.gate(x_flat) # [B*N, num_experts]
+        self.gate_prob = F.softmax(gate_logits, dim=1) # [B*N, num_experts] - For affinity analysis
 
         # Get top-k experts
-        weights, indices = torch.topk(F.softmax(gate_logits, dim=1), self.top_k, dim=1) # [B*N, top_k]
+        weights, indices = torch.topk(self.gate_prob, self.top_k, dim=1) # [B*N, top_k]
 
         # Create a sparse dispatch tensor
         mask = F.one_hot(indices.squeeze(), num_classes=self.n_experts) # [B*N, top_k, num_experts]
 
         # --- Load Balancing Loss ---
-        # Calculate as per the Switch Transformer paper
-        samples_per_expert = mask.float().sum(dim=0).squeeze() # [num_experts]
-        fraction_samples_per_expert = samples_per_expert / samples_per_expert.sum()
+        samples_per_expert = mask.float().sum(dim=0).squeeze()
+        fraction_samples_per_expert = samples_per_expert / (samples_per_expert.sum() + 1e-6)
 
-        prob_per_expert = F.softmax(gate_logits, dim=1).mean(dim=0)
+        prob_per_expert = self.gate_prob.mean(dim=0)
 
         load_balancing_loss = self.n_experts * torch.sum(fraction_samples_per_expert * prob_per_expert)
         self.aux_loss = self.aux_loss_weight * load_balancing_loss
@@ -58,18 +59,14 @@ class MoE_FFN(nn.Module):
         # --- Dispatch to Experts ---
         expert_outputs = []
         for i in range(self.n_experts):
-            expert_outputs.append(self.experts[i](x))
+            expert_outputs.append(self.experts[i](x_flat))
         expert_outputs = torch.stack(expert_outputs, dim=1) # [B*N, num_experts, d_model]
 
-        # Combine expert outputs with gating weights
-        # Mask shape: [B*N, num_experts]
-        # Weights shape: [B*N, 1]
-        # Expert outputs shape: [B*N, num_experts, d_model]
         output = torch.einsum('be,bed->bd', (mask.squeeze() * weights), expert_outputs)
 
         output = output.reshape(batch_size, seq_len, d_model) # [batch_size, patch_num, d_model]
 
-        return output, self.aux_loss
+        return output
 
 
 class MoE_EncoderLayer(nn.Module):
@@ -86,6 +83,7 @@ class MoE_EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.aux_loss = 0
+        self.gate_prob = None
 
     def forward(self, x, attn_mask=None, **kwargs):
         # 1. Multi-Head Attention
@@ -97,7 +95,9 @@ class MoE_EncoderLayer(nn.Module):
         y = self.norm1(x)
 
         # 2. MoE FFN
-        ffn_output, self.aux_loss = self.moe_ffn(y)
+        ffn_output = self.moe_ffn(y)
+        self.aux_loss = self.moe_ffn.aux_loss
+        self.gate_prob = self.moe_ffn.gate_prob
         y = y + self.dropout(ffn_output)
 
         return self.norm2(y), attn

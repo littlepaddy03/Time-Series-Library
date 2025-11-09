@@ -11,16 +11,12 @@ class Model(PatchTST_Base_Model):
     This model inherits from the original PatchTST model and replaces its encoder
     with an MoE-based encoder. It aligns the regression head design with the
     successful baseline model (PatchTST_Regression) and defensively handles all
-    necessary configurations.
+    necessary configurations. It also returns expert affinities for analysis.
     """
     def __init__(self, configs):
-        # Initialize the base PatchTST model.
         super().__init__(configs)
-
-        # --- [BUG FIX] Explicitly set d_model, which is not set by the base model's __init__ ---
         self.d_model = configs.d_model
 
-        # --- Defensively get all other required parameters from configs ---
         n_heads = configs.n_heads
         d_ff = configs.d_ff
         e_layers = configs.e_layers
@@ -28,10 +24,9 @@ class Model(PatchTST_Base_Model):
         activation = configs.activation
         output_attention = getattr(configs, 'output_attention', False)
         factor = getattr(configs, 'factor', 1)
-        n_experts = getattr(configs, 'n_experts', 8)
+        self.n_experts = getattr(configs, 'n_experts', 8)
         aux_loss_weight = getattr(configs, 'aux_loss_weight', 0.1)
 
-        # --- Override the Encoder with our MoE Encoder ---
         self.encoder = Encoder(
             [
                 MoE_EncoderLayer(
@@ -40,7 +35,7 @@ class Model(PatchTST_Base_Model):
                                       output_attention=output_attention), self.d_model, n_heads),
                     self.d_model,
                     d_ff,
-                    n_experts=n_experts,
+                    n_experts=self.n_experts,
                     dropout=dropout,
                     activation=activation,
                     aux_loss_weight=aux_loss_weight
@@ -49,11 +44,8 @@ class Model(PatchTST_Base_Model):
             norm_layer=torch.nn.LayerNorm(self.d_model)
         )
 
-        # --- Define the Regression Head (aligning with PatchTST_Regression baseline) ---
         static_feat_dim = getattr(configs, 'static_feat_dim', 0)
         head_mlp_dim = getattr(configs, 'head_mlp_dim', 128)
-
-        # The input to the head will be the pooled time-series representation + static features.
         head_input_dim = self.d_model + static_feat_dim
 
         self.regression_head = nn.Sequential(
@@ -69,27 +61,40 @@ class Model(PatchTST_Base_Model):
 
         B, L, C = x_dynamic.shape
 
-        # --- Use the base model's patching and embedding ---
         x_dynamic = x_dynamic.permute(0, 2, 1)
         enc_in, n_vars = self.patch_embedding(x_dynamic)
 
-        # --- Use our overridden MoE Encoder ---
         enc_out, attns = self.encoder(enc_in)
 
-        # --- Aggregate auxiliary losses from all MoE layers ---
+        # --- Aggregate auxiliary losses and gate probabilities from all MoE layers ---
         total_aux_loss = 0
+        all_gate_probs = []
         for layer in self.encoder.attn_layers:
             if hasattr(layer, 'aux_loss'):
                 total_aux_loss += layer.aux_loss
+            if hasattr(layer, 'gate_prob') and layer.gate_prob is not None:
+                all_gate_probs.append(layer.gate_prob)
 
-        # --- Pooling & Feature Combination (aligning with PatchTST_Regression baseline) ---
+        # --- Calculate Sample Affinity Score ---
+        if len(all_gate_probs) > 0:
+            # Stack and sum gate probabilities across layers
+            # Each gate_prob is [B*C*N, n_experts]
+            summed_gate_probs = torch.stack(all_gate_probs, dim=0).sum(dim=0)
+
+            # Reshape to [B, C*N, n_experts]
+            token_level_affinity = summed_gate_probs.reshape(B, -1, self.n_experts)
+
+            # Average across all tokens (patches) for each sample
+            sample_affinity = token_level_affinity.mean(dim=1) # [B, n_experts]
+        else:
+            sample_affinity = None
+
+        # --- Pooling & Feature Combination ---
         enc_out = enc_out.reshape(B, n_vars, -1, self.d_model)
-        ts_repr_pooled = enc_out.mean(dim=1)[:, -1, :] # [B, D]
+        ts_repr_pooled = enc_out.mean(dim=1)[:, -1, :]
 
-        # --- Combine with static features ---
         combined_features = torch.cat([ts_repr_pooled, x_static], dim=1)
 
-        # --- Regression ---
         prediction = self.regression_head(combined_features)
 
-        return prediction, total_aux_loss, None
+        return prediction, total_aux_loss, sample_affinity
