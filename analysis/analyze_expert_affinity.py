@@ -67,6 +67,14 @@ def analyze_expert_affinity(affinity_data_path, output_dir):
 
     df = pd.concat([static_df, affinity_df], axis=1)
 
+    # --- Data Diagnosis Step ---
+    print("\n--- Data Diagnosis for 'crop_id' ---")
+    print("Unique values found in 'crop_id' column:")
+    print(df['crop_id'].unique())
+    print("\nValue counts for 'crop_id':")
+    print(df['crop_id'].value_counts())
+    print("-------------------------------------\n")
+
     # --- Visualization 1: Crop Type vs. Expert Affinity ---
     crop_id_map = {1.0: 'Maize', 2.0: 'Rice', 3.0: 'Soybean', 4.0: 'Wheat'}
     df['crop_name'] = df['crop_id'].map(crop_id_map)
