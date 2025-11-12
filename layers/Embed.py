@@ -129,17 +129,15 @@ class DataEmbedding(nn.Module):
 class DataEmbedding_inverted(nn.Module):
     def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
         super(DataEmbedding_inverted, self).__init__()
-        self.value_embedding = nn.Linear(c_in, d_model)
+        self.value_embedding = nn.Linear(c_in, d_model, bias=False)
+        self.temporal_embedding = TimeFeatureEmbedding(
+            d_model=d_model, embed_type=embed_type, freq=freq)
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x, x_mark):
-        x = x.permute(0, 2, 1)
-        # x: [Batch Variate Time]
-        if x_mark is None:
-            x = self.value_embedding(x)
-        else:
-            x = self.value_embedding(torch.cat([x, x_mark.permute(0, 2, 1)], 1))
-        # x: [Batch Variate d_model]
+        x = self.value_embedding(x)
+        if x_mark is not None:
+            x += self.temporal_embedding(x_mark)
         return self.dropout(x)
 
 

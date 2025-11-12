@@ -32,7 +32,7 @@ class Model(TimeMixer_Base_Model):
         x_static = torch.nan_to_num(x_static)
 
         B, L, C = x_enc.shape
-        x_mark_enc = torch.zeros([B, L, 0]).to(x_enc.device)
+        x_mark_enc = None
 
         # Call the refactored encode method from the base class
         enc_out_list, _ = self.encode(x_enc, x_mark_enc)

@@ -33,7 +33,7 @@ class Model(TimeXer_Base_Model):
         x_static = torch.nan_to_num(x_static)
 
         B, L, C = x_enc.shape
-        x_mark_enc = torch.zeros([B, L, 0]).to(x_enc.device)
+        x_mark_enc = None
 
         if self.use_norm:
             means = x_enc.mean(1, keepdim=True).detach()
@@ -47,10 +47,10 @@ class Model(TimeXer_Base_Model):
         # We will need to decide how to partition them if we want to use the exogenous branch meaningfully.
         # For a simple baseline, we'll pass all of x_enc to the main branch (`en_embedding`)
         # and the time features (x_mark_enc) to the exogenous branch (`ex_embedding`).
-        # As our x_mark_enc is empty, ex_embed will be based on positional encoding only.
+        # As our x_mark_enc is None, ex_embed will be based on the value embedding of x_enc only.
 
         en_embed, n_vars = self.en_embedding(x_enc.permute(0, 2, 1))
-        ex_embed = self.ex_embedding(torch.zeros_like(x_enc), x_mark_enc) # Pass zeros as placeholder for series part of ex_embed
+        ex_embed = self.ex_embedding(x_enc, x_mark_enc)
 
         # Encoder
         enc_out = self.encoder(en_embed, ex_embed)
