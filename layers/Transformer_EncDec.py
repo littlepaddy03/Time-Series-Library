@@ -24,34 +24,17 @@ class ConvLayer(nn.Module):
         return x
 
 
-class SwiGLU_FFN(nn.Module):
-    def __init__(self, d_model, d_ff, dropout=0.1):
-        super().__init__()
-        self.w1 = nn.Linear(d_model, d_ff)
-        self.w2 = nn.Linear(d_model, d_ff)
-        self.w3 = nn.Linear(d_ff, d_model)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        return self.dropout(self.w3(F.silu(self.w1(x)) * self.w2(x)))
-
-
 class EncoderLayer(nn.Module):
-    def __init__(self, attention, d_model, d_ff=None, dropout=0.1, activation="relu", ffn_variant="default"):
+    def __init__(self, attention, d_model, d_ff=None, dropout=0.1, activation="relu"):
         super(EncoderLayer, self).__init__()
         d_ff = d_ff or 4 * d_model
         self.attention = attention
+        self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=d_ff, kernel_size=1)
+        self.conv2 = nn.Conv1d(in_channels=d_ff, out_channels=d_model, kernel_size=1)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
-
-        self.ffn_variant = ffn_variant
-        if ffn_variant == "swiglu":
-            self.ffn = SwiGLU_FFN(d_model, d_ff, dropout)
-        else:
-            self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=d_ff, kernel_size=1)
-            self.conv2 = nn.Conv1d(in_channels=d_ff, out_channels=d_model, kernel_size=1)
-            self.activation = F.relu if activation == "relu" else F.gelu
+        self.activation = F.relu if activation == "relu" else F.gelu
 
     def forward(self, x, attn_mask=None, tau=None, delta=None):
         new_x, attn = self.attention(
@@ -60,15 +43,12 @@ class EncoderLayer(nn.Module):
             tau=tau, delta=delta
         )
         x = x + self.dropout(new_x)
-        y = self.norm1(x)
 
-        if self.ffn_variant == "swiglu":
-            ffn_output = self.ffn(y)
-        else:
-            ffn_output = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
-            ffn_output = self.dropout(self.conv2(ffn_output).transpose(-1, 1))
+        y = x = self.norm1(x)
+        y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
+        y = self.dropout(self.conv2(y).transpose(-1, 1))
 
-        return self.norm2(x + ffn_output), attn
+        return self.norm2(x + y), attn
 
 
 class Encoder(nn.Module):

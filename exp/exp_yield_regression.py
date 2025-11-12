@@ -12,6 +12,9 @@ import warnings
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
+# Import new regression models
+from models import TimeXer_Regression, TimeMixer_Regression
+
 warnings.filterwarnings('ignore')
 
 class Exp_Yield_Regression(Exp_Basic):
@@ -20,7 +23,16 @@ class Exp_Yield_Regression(Exp_Basic):
         self.writer = None
 
     def _build_model(self):
-        model = self.model_dict[self.args.model].Model(self.args).float()
+        # We override this method to inject our custom regression models
+        if self.args.model == 'TimeXer':
+            model_class = TimeXer_Regression.Model
+        elif self.args.model == 'TimeMixer':
+            model_class = TimeMixer_Regression.Model
+        else:
+            model_class = self.model_dict[self.args.model].Model
+
+        model = model_class(self.args).float()
+
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
         return model
@@ -45,10 +57,9 @@ class Exp_Yield_Regression(Exp_Basic):
         batch_x_static = batch_x_static.float().to(self.device)
         batch_y = batch_y.float().to(self.device)
 
-        if 'MoE_Regression' in self.args.model:
-            outputs, aux_loss, affinities = self.model(batch_x, batch_x_static)
-        else:
-            outputs, aux_loss, affinities = self.model(batch_x, batch_x_static), None, None
+        # The regression model wrappers return a tuple (prediction, None, None)
+        # to align with the MoE model's output signature.
+        outputs, aux_loss, affinities = self.model(batch_x, batch_x_static)
 
         return outputs, batch_y, aux_loss, affinities, batch_x_static_unnormalized
 

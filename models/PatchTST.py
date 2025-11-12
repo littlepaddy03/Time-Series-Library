@@ -49,7 +49,6 @@ class Model(nn.Module):
             configs.d_model, patch_len, stride, padding, configs.dropout)
 
         # Encoder
-        ffn_variant = getattr(configs, 'ffn_variant', 'default')
         self.encoder = Encoder(
             [
                 EncoderLayer(
@@ -59,8 +58,7 @@ class Model(nn.Module):
                     configs.d_model,
                     configs.d_ff,
                     dropout=configs.dropout,
-                    activation=configs.activation,
-                    ffn_variant=ffn_variant
+                    activation=configs.activation
                 ) for l in range(configs.e_layers)
             ],
             norm_layer=nn.Sequential(Transpose(1,2), nn.BatchNorm1d(configs.d_model), Transpose(1,2))
