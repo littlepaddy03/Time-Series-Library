@@ -25,4 +25,5 @@ python -u run.py \
   --static_feat_dim 66 \
   --head_mlp_dim 128 \
   --des 'Exp' \
-  --itr 1
+  --itr 1 \
+  --regions 'us'

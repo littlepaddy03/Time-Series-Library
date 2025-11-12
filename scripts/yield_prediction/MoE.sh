@@ -18,10 +18,10 @@ python -u run.py \
   --e_layers 3 \
   --d_ff 512 \
   --dropout 0.1 \
-  --batch_size 128 \
+  --batch_size 256 \
   --learning_rate 0.001 \
-  --train_epochs 30 \
-  --patience 3 \
+  --train_epochs 50 \
+  --patience 5 \
   --static_feat_dim 66 \
   --head_mlp_dim 128 \
   --n_experts 8 \
