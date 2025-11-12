@@ -6,7 +6,7 @@ python -u run.py \
   --is_training 1 \
   --root_path ./ \
   --data_path dataset/global_yield_dataset/ \
-  --model_id Global_Yield_PatchTST_Deep \
+  --model_id Global_Yield_PatchTST_SwiGLU \
   --model PatchTST_Regression \
   --data custom \
   --features S \
@@ -15,9 +15,10 @@ python -u run.py \
   --enc_in 20 \
   --d_model 256 \
   --n_heads 4 \
-  --e_layers 6 \
-  --d_ff 1024 \
+  --e_layers 3 \
+  --d_ff 768 \
   --dropout 0.1 \
+  --ffn_variant swiglu \
   --batch_size 128 \
   --learning_rate 0.001 \
   --train_epochs 10 \
