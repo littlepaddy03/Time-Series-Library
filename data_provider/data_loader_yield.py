@@ -85,12 +85,15 @@ class ShardedYieldDataset(Dataset):
         else: self.indices = self.test_indices
 
     @staticmethod
-    def _calculate_scaler(train_dataset, data_files):
+    def _calculate_scaler(train_dataset, data_files, args):
         print("Calculating scaler on training data...")
 
-        static_sum = np.zeros(65, dtype=np.float64)
-        static_sq_sum = np.zeros(65, dtype=np.float64)
-        dynamic_sum = np.zeros(20, dtype=np.float64)
+        static_feat_dim = args.static_feat_dim
+        dynamic_feat_dim = args.enc_in
+
+        static_sum = np.zeros(static_feat_dim, dtype=np.float64)
+        static_sq_sum = np.zeros(static_feat_dim, dtype=np.float64)
+        dynamic_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
         dynamic_sq_sum = np.zeros(20, dtype=np.float64)
         non_zero_count = np.zeros(20, dtype=np.int64)
 
@@ -138,18 +141,21 @@ class ShardedYieldDataset(Dataset):
         region, local_idx = self.global_index[global_idx]
         
         dynamic_features = self.data_files[region]['dynamic'][local_idx]
-        static_features = self.data_files[region]['static'][local_idx]
+        static_features_orig = self.data_files[region]['static'][local_idx]
         target = self.data_files[region]['targets'][local_idx]
 
-        dynamic_features = torch.FloatTensor(dynamic_features)
-        static_features = torch.FloatTensor(static_features)
-        target = torch.FloatTensor(target)
+        dynamic_features_tensor = torch.FloatTensor(dynamic_features)
+        static_features_tensor = torch.FloatTensor(static_features_orig)
+        target_tensor = torch.FloatTensor(target)
+
+        # Keep a copy of the original static features for analysis purposes
+        unnormalized_static_features = static_features_tensor.clone()
 
         if self.scaler:
-            dynamic_features = (dynamic_features - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
-            static_features = (static_features - self.scaler['static_mean']) / (self.scaler['static_std'] + 1e-8)
+            dynamic_features_tensor = (dynamic_features_tensor - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
+            static_features_tensor = (static_features_tensor - self.scaler['static_mean']) / (self.scaler['static_std'] + 1e-8)
 
-        return dynamic_features, static_features, target
+        return dynamic_features_tensor, static_features_tensor, target_tensor, unnormalized_static_features
 
 def data_provider_yield(args, flag):
     # This provider function now returns all datasets and dataloaders at once when flag is 'train'
@@ -166,7 +172,7 @@ def data_provider_yield(args, flag):
     )
 
     # 2. Calculate scaler ONLY on the training set
-    scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset, initial_train_dataset.data_files)
+    scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset, initial_train_dataset.data_files, args)
     initial_train_dataset.scaler = scaler
 
     # 3. Create validation and test datasets, passing the scaler and pre-computed indices
