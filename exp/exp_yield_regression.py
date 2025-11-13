@@ -219,7 +219,7 @@ class Exp_Yield_Regression(Exp_Basic):
         print(f'Test R2: {r2:.4f}, MAE: {mae:.4f}, MSE: {mse:.4f}, RMSE: {rmse:.4f}')
 
         metrics_data = {
-            'overall': {'r2': r2, 'mae': mae, 'mse': mse, 'rmse': rmse},
+            'overall': {'r2': float(r2), 'mae': float(mae), 'mse': float(mse), 'rmse': float(rmse)},
             'per_crop': {}
         }
 
@@ -242,7 +242,7 @@ class Exp_Yield_Regression(Exp_Basic):
             print(f"{crop_name:<10} | {r2_crop:<8.4f} | {mae_crop:<8.4f} | {mse_crop:<8.4f} | {rmse_crop:<8.4f}")
 
             metrics_data['per_crop'][crop_name] = {
-                'r2': r2_crop, 'mae': mae_crop, 'mse': mse_crop, 'rmse': rmse_crop
+                'r2': float(r2_crop), 'mae': float(mae_crop), 'mse': float(mse_crop), 'rmse': float(rmse_crop)
             }
         print("-" * 50)
 
