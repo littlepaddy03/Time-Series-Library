@@ -5,6 +5,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split
 
 # --- Configuration ---
 # Crop ID to Name Mapping, based on etl.py
