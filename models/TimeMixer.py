@@ -326,8 +326,8 @@ class Model(nn.Module):
 
         return x_enc, x_mark_enc
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
-
+    def encode(self, x_enc, x_mark_enc):
+        B, L, C = x_enc.shape
         x_enc, x_mark_enc = self.__multi_scale_process_inputs(x_enc, x_mark_enc)
 
         x_list = []
@@ -354,19 +354,25 @@ class Model(nn.Module):
 
         # embedding
         enc_out_list = []
-        x_list = self.pre_enc(x_list)
+        x_list_out = self.pre_enc(x_list)
         if x_mark_enc is not None:
-            for i, x, x_mark in zip(range(len(x_list[0])), x_list[0], x_mark_list):
+            for i, x, x_mark in zip(range(len(x_list_out[0])), x_list_out[0], x_mark_list):
                 enc_out = self.enc_embedding(x, x_mark)  # [B,T,C]
                 enc_out_list.append(enc_out)
         else:
-            for i, x in zip(range(len(x_list[0])), x_list[0]):
+            for i, x in zip(range(len(x_list_out[0])), x_list_out[0]):
                 enc_out = self.enc_embedding(x, None)  # [B,T,C]
                 enc_out_list.append(enc_out)
 
         # Past Decomposable Mixing as encoder for past
         for i in range(self.layer):
             enc_out_list = self.pdm_blocks[i](enc_out_list)
+
+        return enc_out_list, x_list_out
+
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        B, L, C = x_enc.shape
+        enc_out_list, x_list = self.encode(x_enc, x_mark_enc)
 
         # Future Multipredictor Mixing as decoder for future
         dec_out_list = self.future_multi_mixing(B, enc_out_list, x_list)

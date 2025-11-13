@@ -12,6 +12,9 @@ import warnings
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
+# Import new regression models
+from models import TimeXer_Regression, TimeMixer_Regression
+
 warnings.filterwarnings('ignore')
 
 class Exp_Yield_Regression(Exp_Basic):
@@ -20,7 +23,16 @@ class Exp_Yield_Regression(Exp_Basic):
         self.writer = None
 
     def _build_model(self):
-        model = self.model_dict[self.args.model].Model(self.args).float()
+        # We override this method to inject our custom regression models
+        if self.args.model == 'TimeXer':
+            model_class = TimeXer_Regression.Model
+        elif self.args.model == 'TimeMixer':
+            model_class = TimeMixer_Regression.Model
+        else:
+            model_class = self.model_dict[self.args.model].Model
+
+        model = model_class(self.args).float()
+
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
         return model
@@ -45,10 +57,12 @@ class Exp_Yield_Regression(Exp_Basic):
         batch_x_static = batch_x_static.float().to(self.device)
         batch_y = batch_y.float().to(self.device)
 
-        if 'MoE_Regression' in self.args.model:
-            outputs, aux_loss, affinities = self.model(batch_x, batch_x_static)
+        # Handle models that may return a single tensor or a tuple
+        model_output = self.model(batch_x, batch_x_static)
+        if isinstance(model_output, tuple):
+            outputs, aux_loss, affinities = model_output
         else:
-            outputs, aux_loss, affinities = self.model(batch_x, batch_x_static), None, None
+            outputs, aux_loss, affinities = model_output, None, None
 
         return outputs, batch_y, aux_loss, affinities, batch_x_static_unnormalized
 
@@ -178,9 +192,12 @@ class Exp_Yield_Regression(Exp_Basic):
         return self.model
 
     def test(self, setting, test_loader):
+        import json
+        CROP_MAP = {1.0: 'Maize', 2.0: 'Rice', 3.0: 'Soybean', 4.0: 'Wheat'}
+
         preds, trues = [], []
         unnormalized_static_features_list, expert_affinities_list = [], []
-        
+
         self.model.eval()
         with torch.no_grad():
             for i, batch_data in enumerate(test_loader):
@@ -188,18 +205,48 @@ class Exp_Yield_Regression(Exp_Basic):
 
                 preds.append(outputs.cpu())
                 trues.append(batch_y.cpu())
+                unnormalized_static_features_list.append(unnormalized_static_features.cpu())
                 if affinities is not None:
-                    unnormalized_static_features_list.append(unnormalized_static_features.cpu())
                     expert_affinities_list.append(affinities.cpu())
 
-        preds = torch.cat(preds, 0)
-        trues = torch.cat(trues, 0)
+        preds = torch.cat(preds, 0).numpy()
+        trues = torch.cat(trues, 0).numpy()
+        static_features_all = np.concatenate(unnormalized_static_features_list, axis=0)
         
-        r2 = r2_score(trues.numpy(), preds.numpy())
-        mae, mse, rmse, _, _ = metric(preds.numpy(), trues.numpy())
-
+        # --- Overall Metrics ---
+        r2 = r2_score(trues, preds)
+        mae, mse, rmse, _, _ = metric(preds, trues)
         print(f'Test R2: {r2:.4f}, MAE: {mae:.4f}, MSE: {mse:.4f}, RMSE: {rmse:.4f}')
 
+        metrics_data = {
+            'overall': {'r2': float(r2), 'mae': float(mae), 'mse': float(mse), 'rmse': float(rmse)},
+            'per_crop': {}
+        }
+
+        # --- Per-Crop Metrics ---
+        print("\n------ Per-Crop Test Metrics ------")
+        print(f"{'Crop':<10} | {'R2':<8} | {'MAE':<8} | {'MSE':<8} | {'RMSE':<8}")
+        print("-" * 50)
+
+        crop_ids = static_features_all[:, 3]
+        for crop_id, crop_name in CROP_MAP.items():
+            mask = crop_ids == crop_id
+            if np.sum(mask) == 0:
+                continue
+
+            preds_crop, trues_crop = preds[mask], trues[mask]
+
+            r2_crop = r2_score(trues_crop, preds_crop)
+            mae_crop, mse_crop, rmse_crop, _, _ = metric(preds_crop, trues_crop)
+
+            print(f"{crop_name:<10} | {r2_crop:<8.4f} | {mae_crop:<8.4f} | {mse_crop:<8.4f} | {rmse_crop:<8.4f}")
+
+            metrics_data['per_crop'][crop_name] = {
+                'r2': float(r2_crop), 'mae': float(mae_crop), 'mse': float(mse_crop), 'rmse': float(rmse_crop)
+            }
+        print("-" * 50)
+
+        # --- Logging to Tensorboard ---
         if self.writer:
             self.writer.add_scalar('R2/test', r2, 0)
             self.writer.add_scalar('MAE/test', mae, 0)
@@ -207,15 +254,19 @@ class Exp_Yield_Regression(Exp_Basic):
             self.writer.add_scalar('RMSE/test', rmse, 0)
             self.writer.close()
 
+        # --- Saving Results ---
         results_folder_path = os.path.join('./results/', setting)
         os.makedirs(results_folder_path, exist_ok=True)
-        np.save(os.path.join(results_folder_path, 'metrics.npy'), np.array([r2, mae, mse, rmse]))
-        np.save(os.path.join(results_folder_path, 'pred.npy'), preds.numpy())
-        np.save(os.path.join(results_folder_path, 'true.npy'), trues.numpy())
+
+        with open(os.path.join(results_folder_path, 'metrics.json'), 'w') as f:
+            json.dump(metrics_data, f, indent=4)
+
+        np.save(os.path.join(results_folder_path, 'pred.npy'), preds)
+        np.save(os.path.join(results_folder_path, 'true.npy'), trues)
 
         # --- Save test affinities ---
         if len(expert_affinities_list) > 0:
-            test_static_features = np.concatenate(unnormalized_static_features_list, axis=0)
+            test_static_features = static_features_all
             test_expert_affinities = np.concatenate(expert_affinities_list, axis=0)
             np.savez_compressed(os.path.join(results_folder_path, 'test_affinities.npz'),
                                 static_features=test_static_features,
