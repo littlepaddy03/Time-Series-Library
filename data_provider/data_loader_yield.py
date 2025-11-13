@@ -5,11 +5,14 @@ from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 import torch
 
+import argparse
+
 class ShardedYieldDataset(Dataset):
-    def __init__(self, data_path, regions, flag, scaler=None, indices=None, global_index=None, metadata=None):
+    def __init__(self, data_path, regions, flag, args, scaler=None, indices=None, global_index=None, metadata=None):
         self.data_path = data_path
         self.regions = regions.split(',')
         self.flag = flag
+        self.args = args
         self.scaler = scaler
 
         if indices is None:
@@ -52,7 +55,21 @@ class ShardedYieldDataset(Dataset):
         # --- Data Splitting Logic (Chronological per group) ---
         train_indices, val_indices, test_indices = [], [], []
         self.metadata['group'] = self.metadata['region'] + '_' + self.metadata['crop_id'].astype(str)
-
+        # --- Crop Filtering Logic ---
+        CROP_NAME_TO_ID = {
+            'maize': 1.0,
+            'rice': 2.0,
+            'soybean': 3.0,
+            'wheat': 4.0,
+        }
+        crop_name_arg = getattr(self, 'args', argparse.Namespace()).crop_name
+        if crop_name_arg and crop_name_arg.lower() != 'all':
+            crop_id_to_filter = CROP_NAME_TO_ID.get(crop_name_arg.lower())
+            if crop_id_to_filter:
+                print(f"Filtering data for crop: {crop_name_arg} (ID: {crop_id_to_filter})")
+                self.metadata = self.metadata[self.metadata['crop_id'] == crop_id_to_filter].copy()
+            else:
+                print(f"Warning: Crop name '{crop_name_arg}' not recognized. Using all crops.")
         for group in self.metadata['group'].unique():
             group_df = self.metadata[self.metadata['group'] == group]
             years = np.sort(group_df['year'].unique())
@@ -168,7 +185,8 @@ def data_provider_yield(args, flag):
     initial_train_dataset = ShardedYieldDataset(
         data_path=args.data_path,
         regions=args.regions,
-        flag='train'
+        flag='train',
+        args=args
     )
 
     # 2. Calculate scaler ONLY on the training set
@@ -177,13 +195,13 @@ def data_provider_yield(args, flag):
 
     # 3. Create validation and test datasets, passing the scaler and pre-computed indices
     val_dataset = ShardedYieldDataset(
-        data_path=args.data_path, regions=args.regions, flag='val', scaler=scaler,
+        data_path=args.data_path, regions=args.regions, flag='val', args=args, scaler=scaler,
         indices=initial_train_dataset.val_indices,
         global_index=initial_train_dataset.global_index,
         metadata=initial_train_dataset.metadata
     )
     test_dataset = ShardedYieldDataset(
-        data_path=args.data_path, regions=args.regions, flag='test', scaler=scaler,
+        data_path=args.data_path, regions=args.regions, flag='test', args=args, scaler=scaler,
         indices=initial_train_dataset.test_indices,
         global_index=initial_train_dataset.global_index,
         metadata=initial_train_dataset.metadata
