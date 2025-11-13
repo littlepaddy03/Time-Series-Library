@@ -85,53 +85,74 @@ class ShardedYieldDataset(Dataset):
         else: self.indices = self.test_indices
 
     @staticmethod
-    def _calculate_scaler(train_dataset, data_files, args):
-        print("Calculating scaler on training data...")
+    def _calculate_scalers(train_dataset, data_files, args):
+        print("Calculating per-crop scalers on training data...")
+        scalers = {}
 
-        static_feat_dim = args.static_feat_dim
-        dynamic_feat_dim = args.enc_in
+        # Indices of static features to skip during normalization:
+        # 0: lon, 1: lat, 2: year, 3: crop_id, 65: koppen_geiger_id
+        skip_static_feat_indices = [0, 1, 2, 3, 65]
 
-        static_sum = np.zeros(static_feat_dim, dtype=np.float64)
-        static_sq_sum = np.zeros(static_feat_dim, dtype=np.float64)
-        dynamic_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
-        dynamic_sq_sum = np.zeros(20, dtype=np.float64)
-        non_zero_count = np.zeros(20, dtype=np.int64)
+        train_metadata = train_dataset.metadata[train_dataset.metadata['global_idx'].isin(train_dataset.indices)]
 
-        chunk_size = 10000
-        for i in range(0, len(train_dataset.indices), chunk_size):
-            chunk_indices = train_dataset.indices[i:i+chunk_size]
+        for crop_id in sorted(train_metadata['crop_id'].unique()):
+            print(f"  Calculating for crop_id: {crop_id}...")
+            crop_indices = train_metadata[train_metadata['crop_id'] == crop_id]['global_idx'].values
 
-            static_list, dynamic_list = [], []
-            for g_idx in chunk_indices:
-                region, local_idx = train_dataset.global_index[g_idx]
-                static_list.append(data_files[region]['static'][local_idx])
-                dynamic_list.append(data_files[region]['dynamic'][local_idx])
+            if len(crop_indices) == 0:
+                print(f"    No training samples found for crop_id: {crop_id}. Skipping.")
+                continue
 
-            static_chunk = np.array(static_list)
-            dynamic_chunk = np.array(dynamic_list)
+            static_feat_dim = args.static_feat_dim
+            dynamic_feat_dim = args.enc_in
 
-            static_sum += static_chunk.sum(axis=0)
-            static_sq_sum += np.square(static_chunk).sum(axis=0)
-            non_zero_mask = dynamic_chunk != 0
-            dynamic_sum += dynamic_chunk.sum(axis=(0, 1))
-            dynamic_sq_sum += np.square(dynamic_chunk).sum(axis=(0, 1))
-            non_zero_count += non_zero_mask.sum(axis=(0, 1))
+            static_sum = np.zeros(static_feat_dim, dtype=np.float64)
+            static_sq_sum = np.zeros(static_feat_dim, dtype=np.float64)
+            dynamic_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
+            dynamic_sq_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
+            non_zero_count = np.zeros(dynamic_feat_dim, dtype=np.int64)
 
-        num_train_samples = len(train_dataset.indices)
-        static_mean = static_sum / num_train_samples
-        static_var = static_sq_sum / num_train_samples - np.square(static_mean)
-        static_std = np.sqrt(np.maximum(static_var, 1e-8))
+            chunk_size = 10000
+            for i in range(0, len(crop_indices), chunk_size):
+                chunk_g_indices = crop_indices[i:i + chunk_size]
 
-        non_zero_count[non_zero_count == 0] = 1
-        dynamic_mean = dynamic_sum / non_zero_count
-        dynamic_var = dynamic_sq_sum / non_zero_count - np.square(dynamic_mean)
-        dynamic_std = np.sqrt(np.maximum(dynamic_var, 1e-8))
+                static_list, dynamic_list = [], []
+                for g_idx in chunk_g_indices:
+                    region, local_idx = train_dataset.global_index[g_idx]
+                    static_list.append(data_files[region]['static'][local_idx])
+                    dynamic_list.append(data_files[region]['dynamic'][local_idx])
 
-        scaler_dict = {
-            'dynamic_mean': torch.FloatTensor(dynamic_mean), 'dynamic_std': torch.FloatTensor(dynamic_std),
-            'static_mean': torch.FloatTensor(static_mean), 'static_std': torch.FloatTensor(static_std),
-        }
-        return scaler_dict
+                static_chunk = np.array(static_list)
+                dynamic_chunk = np.array(dynamic_list)
+
+                static_sum += static_chunk.sum(axis=0)
+                static_sq_sum += np.square(static_chunk).sum(axis=0)
+
+                non_zero_mask = dynamic_chunk != 0
+                dynamic_sum += dynamic_chunk.sum(axis=(0, 1))
+                dynamic_sq_sum += np.square(dynamic_chunk).sum(axis=(0, 1))
+                non_zero_count += non_zero_mask.sum(axis=(0, 1))
+
+            num_crop_samples = len(crop_indices)
+
+            # Static features
+            static_mean = static_sum / num_crop_samples
+            static_var = static_sq_sum / num_crop_samples - np.square(static_mean)
+            static_std = np.sqrt(np.maximum(static_var, 1e-8))
+            static_mean[skip_static_feat_indices] = 0.0
+            static_std[skip_static_feat_indices] = 1.0
+
+            # Dynamic features
+            non_zero_count[non_zero_count == 0] = 1
+            dynamic_mean = dynamic_sum / non_zero_count
+            dynamic_var = dynamic_sq_sum / non_zero_count - np.square(dynamic_mean)
+            dynamic_std = np.sqrt(np.maximum(dynamic_var, 1e-8))
+
+            scalers[crop_id] = {
+                'dynamic_mean': torch.FloatTensor(dynamic_mean), 'dynamic_std': torch.FloatTensor(dynamic_std),
+                'static_mean': torch.FloatTensor(static_mean), 'static_std': torch.FloatTensor(static_std),
+            }
+        return scalers
 
     def __len__(self):
         return len(self.indices)
@@ -152,8 +173,11 @@ class ShardedYieldDataset(Dataset):
         unnormalized_static_features = static_features_tensor.clone()
 
         if self.scaler:
-            dynamic_features_tensor = (dynamic_features_tensor - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
-            static_features_tensor = (static_features_tensor - self.scaler['static_mean']) / (self.scaler['static_std'] + 1e-8)
+            crop_id = static_features_tensor[3].item()
+            if crop_id in self.scaler:
+                scaler_dict = self.scaler[crop_id]
+                dynamic_features_tensor = (dynamic_features_tensor - scaler_dict['dynamic_mean']) / (scaler_dict['dynamic_std'] + 1e-8)
+                static_features_tensor = (static_features_tensor - scaler_dict['static_mean']) / (scaler_dict['static_std'] + 1e-8)
 
         return dynamic_features_tensor, static_features_tensor, target_tensor, unnormalized_static_features
 
@@ -171,19 +195,19 @@ def data_provider_yield(args, flag):
         flag='train'
     )
 
-    # 2. Calculate scaler ONLY on the training set
-    scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset, initial_train_dataset.data_files, args)
-    initial_train_dataset.scaler = scaler
+    # 2. Calculate scalers ONLY on the training set
+    scalers = ShardedYieldDataset._calculate_scalers(initial_train_dataset, initial_train_dataset.data_files, args)
+    initial_train_dataset.scaler = scalers
 
-    # 3. Create validation and test datasets, passing the scaler and pre-computed indices
+    # 3. Create validation and test datasets, passing the scalers and pre-computed indices
     val_dataset = ShardedYieldDataset(
-        data_path=args.data_path, regions=args.regions, flag='val', scaler=scaler,
+        data_path=args.data_path, regions=args.regions, flag='val', scaler=scalers,
         indices=initial_train_dataset.val_indices,
         global_index=initial_train_dataset.global_index,
         metadata=initial_train_dataset.metadata
     )
     test_dataset = ShardedYieldDataset(
-        data_path=args.data_path, regions=args.regions, flag='test', scaler=scaler,
+        data_path=args.data_path, regions=args.regions, flag='test', scaler=scalers,
         indices=initial_train_dataset.test_indices,
         global_index=initial_train_dataset.global_index,
         metadata=initial_train_dataset.metadata
