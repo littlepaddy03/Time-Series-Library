@@ -143,7 +143,7 @@ if __name__ == '__main__':
 
     # Yield Regression Task
     parser.add_argument('--regions', type=str, default='us,ar,br,cn,in,eu', help='regions to use for training')
-    parser.add_argument('--crop_name', type=str, default='all', help='crop to train on, options: [maize, rice, soybean, wheat, all]')
+    parser.add_argument('--crop_name', type=str, default=None, help='Specific crop to train on, e.g., Maize, Rice')
     parser.add_argument('--static_feat_dim', type=int, default=65, help='dimension of static features')
     parser.add_argument('--n_experts', type=int, default=8, help='number of experts in MoE model')
     parser.add_argument('--head_mlp_dim', type=int, default=128, help='dimension of MLP in regression head')
@@ -211,6 +211,8 @@ if __name__ == '__main__':
 
             if args.task_name == 'yield_regression':
                 setting += f'_nex{args.n_experts}_hmd{args.head_mlp_dim}'
+                if args.crop_name:
+                    setting += f'_crop{args.crop_name}'
 
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
@@ -245,6 +247,8 @@ if __name__ == '__main__':
 
         if args.task_name == 'yield_regression':
             setting += f'_nex{args.n_experts}_hmd{args.head_mlp_dim}'
+            if args.crop_name:
+                setting += f'_crop{args.crop_name}'
 
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         # The test method for yield_regression does not take arguments
