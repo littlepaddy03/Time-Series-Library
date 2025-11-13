@@ -57,6 +57,10 @@ class Exp_Yield_Regression(Exp_Basic):
         batch_x_static = batch_x_static.float().to(self.device)
         batch_y = batch_y.float().to(self.device)
 
+        # --- Yield Normalization ---
+        if self.args.use_norm and self.yield_scaler:
+            batch_y = (batch_y - self.yield_scaler['mean']) / self.yield_scaler['std']
+
         # Handle models that may return a single tensor or a tuple
         model_output = self.model(batch_x, batch_x_static)
         if isinstance(model_output, tuple):
@@ -89,6 +93,11 @@ class Exp_Yield_Regression(Exp_Basic):
         preds = torch.cat(preds, 0)
         trues = torch.cat(trues, 0)
 
+        # --- Inverse transform predictions and trues ---
+        if self.args.use_norm and self.yield_scaler:
+            preds = preds * self.yield_scaler['std'] + self.yield_scaler['mean']
+            trues = trues * self.yield_scaler['std'] + self.yield_scaler['mean']
+
         r2 = r2_score(trues.numpy(), preds.numpy())
         mae, mse, rmse, _, _ = metric(preds.numpy(), trues.numpy())
 
@@ -103,6 +112,21 @@ class Exp_Yield_Regression(Exp_Basic):
 
     def train(self, setting):
         train_data, train_loader, _, vali_loader, _, test_loader = self._get_data(flag='train')
+
+        # --- Yield Scaler Calculation ---
+        self.yield_scaler = None
+        if self.args.use_norm:
+            all_train_targets = []
+            for i, batch_data in enumerate(train_loader):
+                _, _, batch_y, _ = batch_data
+                all_train_targets.append(batch_y)
+            all_train_targets = torch.cat(all_train_targets, 0).numpy()
+
+            mean = np.mean(all_train_targets)
+            std = np.std(all_train_targets)
+            self.yield_scaler = {'mean': mean, 'std': std}
+            print(f"Yield scaler calculated: mean={mean:.4f}, std={std:.4f}")
+
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
@@ -212,6 +236,11 @@ class Exp_Yield_Regression(Exp_Basic):
         preds = torch.cat(preds, 0).numpy()
         trues = torch.cat(trues, 0).numpy()
         static_features_all = np.concatenate(unnormalized_static_features_list, axis=0)
+
+        # --- Inverse transform predictions and trues ---
+        if self.args.use_norm and self.yield_scaler:
+            preds = preds * self.yield_scaler['std'] + self.yield_scaler['mean']
+            trues = trues * self.yield_scaler['std'] + self.yield_scaler['mean']
         
         # --- Overall Metrics ---
         r2 = r2_score(trues, preds)

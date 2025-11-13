@@ -6,14 +6,11 @@ from sklearn.model_selection import train_test_split
 import torch
 
 class ShardedYieldDataset(Dataset):
-    def __init__(self, args, flag, scaler=None, indices=None, global_index=None, metadata=None):
-        self.data_path = args.data_path
-        self.regions = args.regions.split(',')
-        self.crop_name = args.crop_name
+    def __init__(self, data_path, regions, flag, scaler=None, indices=None, global_index=None, metadata=None):
+        self.data_path = data_path
+        self.regions = regions.split(',')
         self.flag = flag
         self.scaler = scaler
-        self.CROP_MAP_INV = {'Maize': 1.0, 'Rice': 2.0, 'Soybean': 3.0, 'Wheat': 4.0}
-
 
         if indices is None:
             self._scan_and_build_index()
@@ -51,27 +48,6 @@ class ShardedYieldDataset(Dataset):
         self.metadata = pd.concat(metadata_list, ignore_index=True)
         self.metadata['global_idx'] = np.arange(len(self.global_index))
         self.metadata['region'] = [item[0] for item in self.global_index]
-
-        # --- Crop Filtering ---
-        if self.crop_name and self.crop_name in self.CROP_MAP_INV:
-            print(f"Filtering data for crop: {self.crop_name}")
-            crop_id_to_filter = self.CROP_MAP_INV[self.crop_name]
-            self.metadata = self.metadata[self.metadata['crop_id'] == crop_id_to_filter].reset_index(drop=True)
-
-            # Remap global_idx to the filtered dataframe
-            filtered_indices = self.metadata['global_idx'].values
-            self.global_index = [self.global_index[i] for i in filtered_indices]
-            self.metadata['global_idx'] = np.arange(len(self.global_index))
-            print(f"Number of samples after filtering: {len(self.metadata)}")
-
-            if len(self.metadata) == 0:
-                raise ValueError(f"No data found for crop '{self.crop_name}' in the specified regions. Please check your data and arguments.")
-
-        # --- Year Transformation ---
-        min_year = self.metadata['year'].min()
-        self.metadata['year'] = self.metadata['year'] - min_year
-        print(f"Year transformed to relative value (base year: {min_year}).")
-
 
         # --- Data Splitting Logic (Chronological per group) ---
         train_indices, val_indices, test_indices = [], [], []
@@ -146,17 +122,28 @@ class ShardedYieldDataset(Dataset):
         static_var = static_sq_sum / num_train_samples - np.square(static_mean)
         static_std = np.sqrt(np.maximum(static_var, 1e-8))
 
+        # --- Special handling for non-soil static features ---
+        # We only want to normalize the 61 soil features.
+        # The first 4 features (lon, lat, year, crop_id) and the last one (kg_zone)
+        # should not be normalized. We achieve this by setting their scaler to mean=0, std=1.
+        if static_feat_dim == 66: # 61 soil + 5 context
+             # lon, lat, year, crop_id
+            static_mean[:4] = 0.0
+            static_std[:4] = 1.0
+            # kg_zone
+            static_mean[-1] = 0.0
+            static_std[-1] = 1.0
+            print("Scaler adjusted to normalize soil features only.")
+        elif static_feat_dim == 65: # 61 soil + 4 context
+            static_mean[:4] = 0.0
+            static_std[:4] = 1.0
+            print("Scaler adjusted to normalize soil features only.")
+
+
         non_zero_count[non_zero_count == 0] = 1
         dynamic_mean = dynamic_sum / non_zero_count
         dynamic_var = dynamic_sq_sum / non_zero_count - np.square(dynamic_mean)
         dynamic_std = np.sqrt(np.maximum(dynamic_var, 1e-8))
-
-        # --- Special handling for 'year' feature (index 2) ---
-        # We don't want to normalize the relative year, so we set its mean to 0 and std to 1.
-        # This way, the normalization operation (x - 0) / 1 becomes a no-op.
-        static_mean[2] = 0.0
-        static_std[2] = 1.0
-        print("Scaler adjusted for 'year' feature to preserve relative values.")
 
         scaler_dict = {
             'dynamic_mean': torch.FloatTensor(dynamic_mean), 'dynamic_std': torch.FloatTensor(dynamic_std),
@@ -196,21 +183,27 @@ def data_provider_yield(args, flag):
         return None, None
 
     # 1. Create the initial training dataset to perform splitting
-    initial_train_dataset = ShardedYieldDataset(args=args, flag='train')
+    initial_train_dataset = ShardedYieldDataset(
+        data_path=args.data_path,
+        regions=args.regions,
+        flag='train'
+    )
 
-    # 2. Calculate scaler ONLY on the training set
-    scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset, initial_train_dataset.data_files, args)
+    # 2. Calculate scaler ONLY on the training set if normalization is enabled
+    scaler = None
+    if args.use_norm:
+        scaler = ShardedYieldDataset._calculate_scaler(initial_train_dataset, initial_train_dataset.data_files, args)
     initial_train_dataset.scaler = scaler
 
     # 3. Create validation and test datasets, passing the scaler and pre-computed indices
     val_dataset = ShardedYieldDataset(
-        args=args, flag='val', scaler=scaler,
+        data_path=args.data_path, regions=args.regions, flag='val', scaler=scaler,
         indices=initial_train_dataset.val_indices,
         global_index=initial_train_dataset.global_index,
         metadata=initial_train_dataset.metadata
     )
     test_dataset = ShardedYieldDataset(
-        args=args, flag='test', scaler=scaler,
+        data_path=args.data_path, regions=args.regions, flag='test', scaler=scaler,
         indices=initial_train_dataset.test_indices,
         global_index=initial_train_dataset.global_index,
         metadata=initial_train_dataset.metadata
