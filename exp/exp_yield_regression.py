@@ -57,9 +57,12 @@ class Exp_Yield_Regression(Exp_Basic):
         batch_x_static = batch_x_static.float().to(self.device)
         batch_y = batch_y.float().to(self.device)
 
-        # The regression model wrappers return a tuple (prediction, None, None)
-        # to align with the MoE model's output signature.
-        outputs, aux_loss, affinities = self.model(batch_x, batch_x_static)
+        # Handle models that may return a single tensor or a tuple
+        model_output = self.model(batch_x, batch_x_static)
+        if isinstance(model_output, tuple):
+            outputs, aux_loss, affinities = model_output
+        else:
+            outputs, aux_loss, affinities = model_output, None, None
 
         return outputs, batch_y, aux_loss, affinities, batch_x_static_unnormalized
 
