@@ -67,6 +67,11 @@ class ShardedYieldDataset(Dataset):
             if len(self.metadata) == 0:
                 raise ValueError(f"No data found for crop '{self.crop_name}' in the specified regions. Please check your data and arguments.")
 
+        # --- Year Transformation ---
+        min_year = self.metadata['year'].min()
+        self.metadata['year'] = self.metadata['year'] - min_year
+        print(f"Year transformed to relative value (base year: {min_year}).")
+
 
         # --- Data Splitting Logic (Chronological per group) ---
         train_indices, val_indices, test_indices = [], [], []
@@ -145,6 +150,13 @@ class ShardedYieldDataset(Dataset):
         dynamic_mean = dynamic_sum / non_zero_count
         dynamic_var = dynamic_sq_sum / non_zero_count - np.square(dynamic_mean)
         dynamic_std = np.sqrt(np.maximum(dynamic_var, 1e-8))
+
+        # --- Special handling for 'year' feature (index 2) ---
+        # We don't want to normalize the relative year, so we set its mean to 0 and std to 1.
+        # This way, the normalization operation (x - 0) / 1 becomes a no-op.
+        static_mean[2] = 0.0
+        static_std[2] = 1.0
+        print("Scaler adjusted for 'year' feature to preserve relative values.")
 
         scaler_dict = {
             'dynamic_mean': torch.FloatTensor(dynamic_mean), 'dynamic_std': torch.FloatTensor(dynamic_std),
