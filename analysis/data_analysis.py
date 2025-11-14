@@ -18,7 +18,6 @@ CROP_MAP = {
 }
 
 # Define the full list of static feature columns based on etl.py
-# This is crucial for creating the pandas DataFrame with correct headers.
 CONTEXT_FEATURES = ['longitude', 'latitude', 'year', 'crop_id']
 SOIL_FEATURES = [
     'bdod_bdod_0-5cm_mean', 'bdod_bdod_100-200cm_mean', 'bdod_bdod_15-30cm_mean',
@@ -48,13 +47,27 @@ SOIL_FEATURES = [
 CLIMATE_FEATURE = ['koppen_geiger_zone']
 STATIC_FEATURE_COLUMNS = CONTEXT_FEATURES + SOIL_FEATURES + CLIMATE_FEATURE
 
-# A smaller, representative subset of features to analyze in detail
-FEATURES_TO_ANALYZE = [
-    'latitude',
-    'bdod_bdod_0-5cm_mean',    # Soil bulk density
-    'phh2o_phh2o_0-5cm_mean',  # Soil pH
-    'soc_soc_0-5cm_mean',      # Soil organic carbon
-    'nitrogen_nitrogen_0-5cm_mean' # Soil nitrogen
+DYNAMIC_FEATURE_COLUMNS = [
+    'NDVI', 'Wind_Speed_10m_Mean', 'Temperature_Air_2m_Min_24h',
+    'Temperature_Air_2m_Max_24h', 'Temperature_Air_2m_Mean_24h',
+    'Temperature_Air_2m_Max_Day_Time', 'Temperature_Air_2m_Mean_Day_Time',
+    'Temperature_Air_2m_Min_Night_Time', 'Temperature_Air_2m_Mean_Night_Time',
+    'Dew_Point_Temperature_2m_Mean', 'Precipitation_Flux',
+    'Precipitation_Rain_Duration_Fraction', 'Precipitation_Solid_Duration_Fraction',
+    'Snow_Thickness_Mean', 'Snow_Thickness_LWE_Mean', 'Vapour_Pressure_Mean',
+    'Solar_Radiation_Flux', 'Cloud_Cover_Mean', 'Relative_Humidity_2m_06h',
+    'Relative_Humidity_2m_15h'
+]
+
+# Automatically select all top-layer (0-5cm) soil features for analysis
+SOIL_FEATURES_TO_ANALYZE = [col for col in SOIL_FEATURES if '0-5cm' in col]
+
+# Select key dynamic features for trend analysis
+DYNAMIC_FEATURES_TO_ANALYZE = [
+    'NDVI',
+    'Temperature_Air_2m_Mean_24h',
+    'Precipitation_Flux',
+    'Solar_Radiation_Flux'
 ]
 
 def parse_args():
@@ -67,10 +80,10 @@ def parse_args():
 
 def load_data(data_path, regions):
     """
-    Loads static features and targets from sharded .npy files into a single pandas DataFrame.
+    Loads static, dynamic, and target data from sharded .npy files.
+    Returns a pandas DataFrame for static/targets and a NumPy array for dynamic features.
     """
-    all_static_data = []
-    all_target_data = []
+    all_static_data, all_target_data, all_dynamic_data = [], [], []
 
     print("Loading data from sharded .npy files...")
     for region in tqdm(regions, desc="Processing Regions"):
@@ -81,19 +94,20 @@ def load_data(data_path, regions):
 
         static_file = os.path.join(region_path, 'static_features.npy')
         target_file = os.path.join(region_path, 'targets.npy')
+        dynamic_file = os.path.join(region_path, 'dynamic_features.npy')
 
-        if os.path.exists(static_file) and os.path.exists(target_file):
+        if os.path.exists(static_file) and os.path.exists(target_file) and os.path.exists(dynamic_file):
             static_data = np.load(static_file, mmap_mode='r')
             target_data = np.load(target_file, mmap_mode='r')
+            dynamic_data = np.load(dynamic_file, mmap_mode='r')
 
-            # Ensure the number of static features matches the expected column count
             if static_data.shape[1] != len(STATIC_FEATURE_COLUMNS):
                  raise ValueError(f"Mismatch in static features for region '{region}'. "
-                                 f"Expected {len(STATIC_FEATURE_COLUMNS)} columns, but found {static_data.shape[1]}. "
-                                 "Please ensure etl.py has been run correctly.")
+                                 f"Expected {len(STATIC_FEATURE_COLUMNS)}, but found {static_data.shape[1]}.")
 
             all_static_data.append(static_data)
             all_target_data.append(target_data)
+            all_dynamic_data.append(dynamic_data)
         else:
             print(f"Warning: Data files not found for region {region}. Skipping.")
 
@@ -101,98 +115,108 @@ def load_data(data_path, regions):
         raise FileNotFoundError("No data was loaded. Please check --data_path and --regions.")
 
     # Concatenate data from all regions
-    combined_static = np.vstack(all_static_data)
-    combined_targets = np.vstack(all_target_data)
+    df = pd.DataFrame(np.vstack(all_static_data), columns=STATIC_FEATURE_COLUMNS)
+    df['yield'] = np.vstack(all_target_data)
+    dynamic_features = np.vstack(all_dynamic_data)
 
-    # Create DataFrame
-    df = pd.DataFrame(combined_static, columns=STATIC_FEATURE_COLUMNS)
-    df['yield'] = combined_targets
     print(f"Successfully loaded {len(df)} samples.")
-    return df
+    return df, dynamic_features
 
-def analyze_data(df, output_dir):
-    """
-    Performs analysis on the loaded data, generating plots and summary statistics.
-    """
-    print(f"Starting data analysis. Results will be saved to '{output_dir}'")
+def analyze_static_features(df, output_dir):
+    """Analyzes yield and static feature distributions."""
+    print("--- Starting Static Feature Analysis ---")
     os.makedirs(output_dir, exist_ok=True)
-
-    # --- Analysis Part 1: Yield Distribution ---
-    yield_stats_list = []
-    plt.figure(figsize=(15, 10))
-    sns.set_style("whitegrid")
-
     unique_crops = sorted(df['crop_id'].unique())
 
+    # 1. Yield Distribution
+    plt.figure(figsize=(15, 10))
     for crop_id in unique_crops:
-        crop_name = CROP_MAP.get(crop_id, f"Unknown_{crop_id}")
-        crop_df = df[df['crop_id'] == crop_id]
-        yield_series = crop_df['yield']
+        crop_name = CROP_MAP.get(crop_id, f"ID_{crop_id}")
+        sns.kdeplot(df[df['crop_id'] == crop_id]['yield'], label=crop_name, fill=True, alpha=0.3)
+    plt.title('Comparative Yield Distribution by Crop')
+    plt.xlabel('Yield'); plt.ylabel('Density')
+    plt.legend(); plt.savefig(os.path.join(output_dir, 'yield_distribution.png')); plt.close()
+    print("Saved yield distribution plot.")
 
-        # Collect summary statistics
-        stats = yield_series.describe()
-        stats['crop_name'] = crop_name
-        yield_stats_list.append(stats)
+    yield_stats_df = df.groupby('crop_id')['yield'].describe()
+    yield_stats_df['crop_name'] = yield_stats_df.index.map(CROP_MAP)
+    yield_stats_df.to_csv(os.path.join(output_dir, 'yield_summary_stats.csv'))
+    print("Saved yield summary stats.\n", yield_stats_df)
 
-        # Plot distribution for each crop on the same axes for comparison
-        sns.kdeplot(yield_series, label=crop_name, fill=True, alpha=0.3)
-
-    plt.title('Comparative Yield Distribution by Crop', fontsize=16)
-    plt.xlabel('Yield', fontsize=12)
-    plt.ylabel('Density', fontsize=12)
-    plt.legend()
-    yield_dist_path = os.path.join(output_dir, 'yield_distribution_comparison.png')
-    plt.savefig(yield_dist_path)
-    plt.close()
-    print(f"Saved yield distribution plot to: {yield_dist_path}")
-
-    # Save yield statistics to CSV
-    yield_stats_df = pd.DataFrame(yield_stats_list).set_index('crop_name')
-    yield_csv_path = os.path.join(output_dir, 'yield_summary_stats.csv')
-    yield_stats_df.to_csv(yield_csv_path)
-    print(f"Saved yield summary stats to: {yield_csv_path}")
-    print("\nYield Summary Statistics:\n", yield_stats_df)
-
-    # --- Analysis Part 2: Feature Distribution ---
-    feature_stats_list = []
-    for feature_name in FEATURES_TO_ANALYZE:
-        stats_by_crop = df.groupby('crop_id')[feature_name].describe()
-        stats_by_crop['crop_name'] = stats_by_crop.index.map(CROP_MAP)
-        stats_by_crop = stats_by_crop.set_index('crop_name')
-        feature_stats_list.append(stats_by_crop)
-
-        # Plot feature distribution
+    # 2. Soil Feature Distributions
+    print(f"\nAnalyzing {len(SOIL_FEATURES_TO_ANALYZE)} top-layer soil features...")
+    for feature in tqdm(SOIL_FEATURES_TO_ANALYZE, desc="Soil Features"):
         plt.figure(figsize=(15, 10))
         for crop_id in unique_crops:
             crop_name = CROP_MAP.get(crop_id)
-            sns.kdeplot(df[df['crop_id'] == crop_id][feature_name], label=crop_name, fill=True, alpha=0.3)
-        plt.title(f'Comparative Distribution of "{feature_name}" by Crop', fontsize=16)
-        plt.xlabel(feature_name, fontsize=12)
-        plt.ylabel('Density', fontsize=12)
-        plt.legend()
-        feature_dist_path = os.path.join(output_dir, f'feature_dist_{feature_name}.png')
-        plt.savefig(feature_dist_path)
-        plt.close()
-        print(f"Saved {feature_name} distribution plot to: {feature_dist_path}")
+            sns.kdeplot(df[df['crop_id'] == crop_id][feature], label=crop_name, fill=True, alpha=0.3)
+        plt.title(f'Distribution of "{feature}" by Crop'); plt.xlabel(feature); plt.ylabel('Density')
+        plt.legend(); plt.savefig(os.path.join(output_dir, f'soil_dist_{feature}.png')); plt.close()
 
+    soil_stats_df = df.groupby('crop_id')[SOIL_FEATURES_TO_ANALYZE].describe()
+    soil_stats_df.to_csv(os.path.join(output_dir, 'soil_features_summary_stats.csv'))
+    print("Saved all soil feature plots and summary stats.")
 
-    # Save feature statistics to CSV
-    feature_summary_df = pd.concat(feature_stats_list, keys=FEATURES_TO_ANALYZE, axis=0)
-    feature_csv_path = os.path.join(output_dir, 'feature_summary_stats.csv')
-    feature_summary_df.to_csv(feature_csv_path)
-    print(f"Saved feature summary stats to: {feature_csv_path}")
-    print("\nFeature Summary Statistics:\n", feature_summary_df)
+def analyze_dynamic_features(df, dynamic_features, output_dir):
+    """Analyzes dynamic feature trends across the year."""
+    print("\n--- Starting Dynamic Feature Analysis ---")
+    os.makedirs(output_dir, exist_ok=True)
+    unique_crops = sorted(df['crop_id'].unique())
+    days = np.arange(1, 366)
+
+    all_trends_data = []
+
+    for feature_name in tqdm(DYNAMIC_FEATURES_TO_ANALYZE, desc="Dynamic Features"):
+        feature_idx = DYNAMIC_FEATURE_COLUMNS.index(feature_name)
+        plt.figure(figsize=(15, 10))
+
+        for crop_id in unique_crops:
+            crop_name = CROP_MAP.get(crop_id, f"ID_{crop_id}")
+
+            # Get all dynamic data for the current crop
+            crop_mask = (df['crop_id'] == crop_id).values
+            crop_dynamic_data = dynamic_features[crop_mask, :, feature_idx] # (n_samples, 365)
+
+            # Calculate mean for each day, ignoring zeros from padding
+            daily_means = []
+            for day in range(365):
+                daily_values = crop_dynamic_data[:, day]
+                non_zero_values = daily_values[daily_values != 0]
+                daily_means.append(np.mean(non_zero_values) if non_zero_values.size > 0 else 0)
+
+            plt.plot(days, daily_means, label=crop_name)
+
+            # Store data for CSV export
+            for day, value in enumerate(daily_means, 1):
+                all_trends_data.append([feature_name, crop_name, day, value])
+
+        plt.title(f'Average Annual Trend of "{feature_name}" by Crop'); plt.xlabel('Day of Year'); plt.ylabel(f'Mean {feature_name}')
+        plt.grid(True); plt.legend(); plt.savefig(os.path.join(output_dir, f'dynamic_trend_{feature_name}.png')); plt.close()
+
+    # Save the collected trend data to a single CSV
+    trends_df = pd.DataFrame(all_trends_data, columns=['feature', 'crop_name', 'day_of_year', 'mean_value'])
+    trends_df.to_csv(os.path.join(output_dir, 'dynamic_features_annual_trends.csv'), index=False)
+    print("Saved all dynamic feature trend plots and summary CSV.")
 
 
 def main():
     """Main execution function."""
     args = parse_args()
     try:
-        df = load_data(args.data_path, args.regions.split(','))
-        analyze_data(df, args.output_dir)
+        df, dynamic_features = load_data(args.data_path, args.regions.split(','))
+
+        # Create a dedicated sub-directory for static and dynamic analysis outputs
+        static_output_dir = os.path.join(args.output_dir, 'static_features')
+        dynamic_output_dir = os.path.join(args.output_dir, 'dynamic_features')
+
+        analyze_static_features(df, static_output_dir)
+        analyze_dynamic_features(df, dynamic_features, dynamic_output_dir)
+
+        print(f"\nAnalysis complete. All results saved in '{args.output_dir}'")
+
     except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}")
-        print("Please ensure the provided paths are correct and the data has been processed.")
+        print("Please ensure paths are correct and data has been processed via etl.py.")
 
 if __name__ == '__main__':
     main()
