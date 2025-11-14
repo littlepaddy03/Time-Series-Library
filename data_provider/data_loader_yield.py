@@ -6,10 +6,11 @@ from sklearn.model_selection import train_test_split
 import torch
 
 class ShardedYieldDataset(Dataset):
-    def __init__(self, data_path, regions, flag, scaler=None, indices=None, global_index=None, metadata=None):
+    def __init__(self, data_path, regions, flag, crop_name=None, scaler=None, indices=None, global_index=None, metadata=None):
         self.data_path = data_path
         self.regions = regions.split(',')
         self.flag = flag
+        self.crop_name = crop_name
         self.scaler = scaler
 
         if indices is None:
@@ -49,11 +50,29 @@ class ShardedYieldDataset(Dataset):
         self.metadata['global_idx'] = np.arange(len(self.global_index))
         self.metadata['region'] = [item[0] for item in self.global_index]
 
+        # --- Crop Filtering Logic ---
+        if self.crop_name:
+            CROP_MAP = {1.0: 'Maize', 2.0: 'Rice', 3.0: 'Soybean', 4.0: 'Wheat'}
+            CROP_NAME_TO_ID = {v: k for k, v in CROP_MAP.items()}
+
+            if self.crop_name not in CROP_NAME_TO_ID:
+                raise ValueError(f"Invalid crop name '{self.crop_name}'. Available options are: {list(CROP_NAME_TO_ID.keys())}")
+
+            target_crop_id = CROP_NAME_TO_ID[self.crop_name]
+            self.metadata = self.metadata[self.metadata['crop_id'] == target_crop_id].reset_index(drop=True)
+            print(f"Filtered for crop: '{self.crop_name}'. Number of samples: {len(self.metadata)}")
+
+
         # --- Data Splitting Logic (Chronological per group) ---
         train_indices, val_indices, test_indices = [], [], []
-        self.metadata['group'] = self.metadata['region'] + '_' + self.metadata['crop_id'].astype(str)
+        # Grouping for splitting is now just by region since we are in a single-crop context
+        group_key = 'group'
+        if self.crop_name:
+             self.metadata[group_key] = self.metadata['region']
+        else:
+             self.metadata[group_key] = self.metadata['region'] + '_' + self.metadata['crop_id'].astype(str)
 
-        for group in self.metadata['group'].unique():
+        for group in self.metadata[group_key].unique():
             group_df = self.metadata[self.metadata['group'] == group]
             years = np.sort(group_df['year'].unique())
             n_years = len(years)
@@ -168,7 +187,8 @@ def data_provider_yield(args, flag):
     initial_train_dataset = ShardedYieldDataset(
         data_path=args.data_path,
         regions=args.regions,
-        flag='train'
+        flag='train',
+        crop_name=getattr(args, 'crop_name', None)  # Safely get crop_name
     )
 
     # 2. Calculate scaler ONLY on the training set
@@ -178,12 +198,14 @@ def data_provider_yield(args, flag):
     # 3. Create validation and test datasets, passing the scaler and pre-computed indices
     val_dataset = ShardedYieldDataset(
         data_path=args.data_path, regions=args.regions, flag='val', scaler=scaler,
+        crop_name=getattr(args, 'crop_name', None),
         indices=initial_train_dataset.val_indices,
         global_index=initial_train_dataset.global_index,
         metadata=initial_train_dataset.metadata
     )
     test_dataset = ShardedYieldDataset(
         data_path=args.data_path, regions=args.regions, flag='test', scaler=scaler,
+        crop_name=getattr(args, 'crop_name', None),
         indices=initial_train_dataset.test_indices,
         global_index=initial_train_dataset.global_index,
         metadata=initial_train_dataset.metadata
