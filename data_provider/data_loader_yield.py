@@ -91,6 +91,9 @@ class ShardedYieldDataset(Dataset):
         static_feat_dim = args.static_feat_dim
         dynamic_feat_dim = args.enc_in
 
+        # Define the slice for soil features (indices 4 to 64)
+        soil_slice = slice(4, 65)
+
         static_sum = np.zeros(static_feat_dim, dtype=np.float64)
         static_sq_sum = np.zeros(static_feat_dim, dtype=np.float64)
         dynamic_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
@@ -110,17 +113,27 @@ class ShardedYieldDataset(Dataset):
             static_chunk = np.array(static_list)
             dynamic_chunk = np.array(dynamic_list)
 
-            static_sum += static_chunk.sum(axis=0)
-            static_sq_sum += np.square(static_chunk).sum(axis=0)
+            # Only accumulate stats for the soil features slice
+            static_sum[soil_slice] += static_chunk[:, soil_slice].sum(axis=0)
+            static_sq_sum[soil_slice] += np.square(static_chunk[:, soil_slice]).sum(axis=0)
+
             non_zero_mask = dynamic_chunk != 0
             dynamic_sum += dynamic_chunk.sum(axis=(0, 1))
             dynamic_sq_sum += np.square(dynamic_chunk).sum(axis=(0, 1))
             non_zero_count += non_zero_mask.sum(axis=(0, 1))
 
         num_train_samples = len(train_dataset.indices)
+
+        # Calculate mean and std. Non-soil features will have mean 0.
         static_mean = static_sum / num_train_samples
         static_var = static_sq_sum / num_train_samples - np.square(static_mean)
         static_std = np.sqrt(np.maximum(static_var, 1e-8))
+
+        # For non-soil features, set std to 1.0. This makes the scaling operation (x-0)/1 = x, leaving them unchanged.
+        # This is a safe way to handle it without changing the __getitem__ method.
+        is_soil_feature = np.zeros(static_feat_dim, dtype=bool)
+        is_soil_feature[soil_slice] = True
+        static_std[~is_soil_feature] = 1.0
 
         non_zero_count[non_zero_count == 0] = 1
         dynamic_mean = dynamic_sum / non_zero_count
