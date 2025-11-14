@@ -6,7 +6,7 @@ python -u run.py \
   --is_training 1 \
   --root_path ./ \
   --data_path dataset/global_yield_dataset/ \
-  --model_id Maize_Yield_PatchTST \
+  --model_id Maize_Yield_PatchTST_EarlyFusion \
   --model PatchTST_Regression \
   --data custom \
   --features S \
@@ -17,14 +17,14 @@ python -u run.py \
   --n_heads 4 \
   --e_layers 3 \
   --d_ff 512 \
-  --dropout 0.1 \
+  --dropout 0.3 \
   --batch_size 128 \
-  --learning_rate 0.001 \
-  --train_epochs 10 \
-  --patience 3 \
+  --learning_rate 0.0001 \
+  --train_epochs 100 \
+  --patience 10 \
   --static_feat_dim 66 \
   --crop_name 'Maize' \
   --head_mlp_dim 128 \
-  --des 'Exp' \
+  --des 'SingleCrop_EarlyFusion' \
   --itr 1 \
-  --regions 'us'
+  --regions 'us,ar,br,cn,in,eu'

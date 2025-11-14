@@ -16,10 +16,25 @@ class PatchTST_backbone(nn.Module):
         self.patchtst = PatchTSTModel(dummy_configs)
         self.d_model = configs.d_model
 
-    def forward(self, x): # x: [bs x seq_len x n_vars]
+    def forward(self, x_dynamic, x_static_proj): # x_dynamic: [bs x seq_len x n_vars], x_static_proj: [bs x d_model]
         # do patching and embedding
-        x = x.permute(0, 2, 1) # [bs x n_vars x seq_len]
-        enc_out, n_vars = self.patchtst.patch_embedding(x)
+        x_dynamic = x_dynamic.permute(0, 2, 1) # [bs x n_vars x seq_len]
+        enc_out, n_vars = self.patchtst.patch_embedding(x_dynamic)
+
+        # --- Early Fusion: Add static features to each patch ---
+        # enc_out shape: [bs * n_vars, patch_num, d_model]
+        # x_static_proj shape: [bs, d_model]
+
+        patch_num = enc_out.shape[1]
+
+        # Reshape and expand static features
+        # [bs, d_model] -> [bs, 1, d_model] -> [bs * n_vars, 1, d_model]
+        static_embedding = x_static_proj.unsqueeze(1).repeat(n_vars, 1, 1)
+
+        # [bs * n_vars, 1, d_model] -> [bs * n_vars, patch_num, d_model]
+        static_embedding_expanded = static_embedding.expand(-1, patch_num, -1)
+
+        enc_out = enc_out + static_embedding_expanded
 
         # Encoder
         enc_out, attns = self.patchtst.encoder(enc_out)
@@ -44,9 +59,15 @@ class Model(nn.Module):
         self.backbone = PatchTST_backbone(configs)
         self.d_model = configs.d_model
         
-        # --- 2. 定义回归头 (Regression Head) ---
+        # --- 2. 新增: 静态特征投影层 (Static Feature Projector) ---
         self.static_feat_dim = configs.static_feat_dim
-        head_input_dim = configs.d_model + configs.static_feat_dim
+        self.static_projector = nn.Linear(self.static_feat_dim, self.d_model)
+        self.proj_norm = nn.LayerNorm(self.d_model)
+        self.proj_dropout = nn.Dropout(configs.dropout)
+
+        # --- 3. 定义回归头 (Regression Head) ---
+        # 输入维度现在只有 d_model, 因为融合已在backbone中完成
+        head_input_dim = configs.d_model
         
         self.regression_head = nn.Sequential(
             nn.Linear(head_input_dim, configs.head_mlp_dim),
@@ -60,16 +81,21 @@ class Model(nn.Module):
         x_dynamic = torch.nan_to_num(x_dynamic)
         x_static = torch.nan_to_num(x_static)
 
-        # (B, L, C) -> (B, n_vars, N, D)
-        time_series_repr = self.backbone(x_dynamic) 
+        # --- 1. Project and normalize static features ---
+        x_static_proj = self.static_projector(x_static)
+        x_static_proj = self.proj_norm(x_static_proj)
+        x_static_proj = self.proj_dropout(x_static_proj)
+
+        # --- 2. Pass both dynamic and projected static features to the backbone ---
+        # (B, L, C), (B, D) -> (B, n_vars, N, D)
+        time_series_repr = self.backbone(x_dynamic, x_static_proj)
         
+        # --- 3. Pool the output from the backbone ---
         # (B, n_vars, N, D) -> (B, D)
         time_series_repr_flat = time_series_repr.mean(dim=1)[:, -1, :]
         
-        # (B, D) 和 (B, M) -> (B, D + M)
-        combined_features = torch.cat([time_series_repr_flat, x_static], dim=1)
-        
-        # (B, D + M) -> (B, 1)
-        prediction = self.regression_head(combined_features)
+        # --- 4. Pass the pooled representation to the regression head ---
+        # (B, D) -> (B, 1)
+        prediction = self.regression_head(time_series_repr_flat)
         
         return prediction
