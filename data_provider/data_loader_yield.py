@@ -172,12 +172,13 @@ class ShardedYieldDataset(Dataset):
         # Keep a copy of the original static features for analysis purposes
         unnormalized_static_features = static_features_tensor.clone()
 
-        if self.scaler:
-            crop_id = static_features_tensor[3].item()
-            if crop_id in self.scaler:
-                scaler_dict = self.scaler[crop_id]
-                dynamic_features_tensor = (dynamic_features_tensor - scaler_dict['dynamic_mean']) / (scaler_dict['dynamic_std'] + 1e-8)
-                static_features_tensor = (static_features_tensor - scaler_dict['static_mean']) / (scaler_dict['static_std'] + 1e-8)
+        # --- Normalization Disabled for Debugging ---
+        # if self.scaler:
+        #     crop_id = static_features_tensor[3].item()
+        #     if crop_id in self.scaler:
+        #         scaler_dict = self.scaler[crop_id]
+        #         dynamic_features_tensor = (dynamic_features_tensor - scaler_dict['dynamic_mean']) / (scaler_dict['dynamic_std'] + 1e-8)
+        #         static_features_tensor = (static_features_tensor - scaler_dict['static_mean']) / (scaler_dict['static_std'] + 1e-8)
 
         return dynamic_features_tensor, static_features_tensor, target_tensor, unnormalized_static_features
 
@@ -195,9 +196,11 @@ def data_provider_yield(args, flag):
         flag='train'
     )
 
+    # --- Normalization Disabled for Debugging ---
     # 2. Calculate scalers ONLY on the training set
-    scalers = ShardedYieldDataset._calculate_scalers(initial_train_dataset, initial_train_dataset.data_files, args)
-    initial_train_dataset.scaler = scalers
+    # scalers = ShardedYieldDataset._calculate_scalers(initial_train_dataset, initial_train_dataset.data_files, args)
+    # initial_train_dataset.scaler = scalers
+    scalers = None # Explicitly set scaler to None
 
     # 3. Create validation and test datasets, passing the scalers and pre-computed indices
     val_dataset = ShardedYieldDataset(
