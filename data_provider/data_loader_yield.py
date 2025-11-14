@@ -6,11 +6,12 @@ from sklearn.model_selection import train_test_split
 import torch
 
 class ShardedYieldDataset(Dataset):
-    def __init__(self, data_path, regions, flag, scaler=None, indices=None, global_index=None, metadata=None):
+    def __init__(self, data_path, regions, flag, scaler=None, indices=None, global_index=None, metadata=None, crop_name=None):
         self.data_path = data_path
         self.regions = regions.split(',')
         self.flag = flag
         self.scaler = scaler
+        self.crop_name = crop_name
 
         if indices is None:
             self._scan_and_build_index()
@@ -46,8 +47,22 @@ class ShardedYieldDataset(Dataset):
             metadata_list.append(pd.DataFrame(static_features_mmap[:, [0, 1, 2, 3]], columns=['lon', 'lat', 'year', 'crop_id']))
 
         self.metadata = pd.concat(metadata_list, ignore_index=True)
-        self.metadata['global_idx'] = np.arange(len(self.global_index))
+
+        # --- Filter by crop_name if provided ---
+        if self.crop_name:
+            crop_map = {'Maize': 1.0, 'Rice': 2.0, 'Soybean': 3.0, 'Wheat': 4.0}
+            crop_id = crop_map.get(self.crop_name)
+            if crop_id is None:
+                raise ValueError(f"Invalid crop_name: {self.crop_name}. Must be one of {list(crop_map.keys())}")
+
+            print(f"Filtering dataset for a single crop: {self.crop_name} (ID: {crop_id})")
+            self.metadata = self.metadata[self.metadata['crop_id'] == crop_id].reset_index(drop=True)
+
+        self.metadata['global_idx'] = np.arange(len(self.metadata))
+        # Rebuild global_index to match the filtered metadata
+        self.global_index = [(self.global_index[i][0], self.global_index[i][1]) for i in self.metadata.index]
         self.metadata['region'] = [item[0] for item in self.global_index]
+
 
         # --- Data Splitting Logic (Chronological per group) ---
         train_indices, val_indices, test_indices = [], [], []
@@ -172,13 +187,12 @@ class ShardedYieldDataset(Dataset):
         # Keep a copy of the original static features for analysis purposes
         unnormalized_static_features = static_features_tensor.clone()
 
-        # --- Normalization Disabled for Debugging ---
-        # if self.scaler:
-        #     crop_id = static_features_tensor[3].item()
-        #     if crop_id in self.scaler:
-        #         scaler_dict = self.scaler[crop_id]
-        #         dynamic_features_tensor = (dynamic_features_tensor - scaler_dict['dynamic_mean']) / (scaler_dict['dynamic_std'] + 1e-8)
-        #         static_features_tensor = (static_features_tensor - scaler_dict['static_mean']) / (scaler_dict['static_std'] + 1e-8)
+        if self.scaler:
+            crop_id = static_features_tensor[3].item()
+            if crop_id in self.scaler:
+                scaler_dict = self.scaler[crop_id]
+                dynamic_features_tensor = (dynamic_features_tensor - scaler_dict['dynamic_mean']) / (scaler_dict['dynamic_std'] + 1e-8)
+                static_features_tensor = (static_features_tensor - scaler_dict['static_mean']) / (scaler_dict['static_std'] + 1e-8)
 
         return dynamic_features_tensor, static_features_tensor, target_tensor, unnormalized_static_features
 
@@ -189,31 +203,34 @@ def data_provider_yield(args, flag):
         # This function should ideally be called only once with flag='train'.
         return None, None
 
+    crop_name = getattr(args, 'crop_name', None)
+
     # 1. Create the initial training dataset to perform splitting
     initial_train_dataset = ShardedYieldDataset(
         data_path=args.data_path,
         regions=args.regions,
-        flag='train'
+        flag='train',
+        crop_name=crop_name
     )
 
-    # --- Normalization Disabled for Debugging ---
     # 2. Calculate scalers ONLY on the training set
-    # scalers = ShardedYieldDataset._calculate_scalers(initial_train_dataset, initial_train_dataset.data_files, args)
-    # initial_train_dataset.scaler = scalers
-    scalers = None # Explicitly set scaler to None
+    scalers = ShardedYieldDataset._calculate_scalers(initial_train_dataset, initial_train_dataset.data_files, args)
+    initial_train_dataset.scaler = scalers
 
     # 3. Create validation and test datasets, passing the scalers and pre-computed indices
     val_dataset = ShardedYieldDataset(
         data_path=args.data_path, regions=args.regions, flag='val', scaler=scalers,
         indices=initial_train_dataset.val_indices,
         global_index=initial_train_dataset.global_index,
-        metadata=initial_train_dataset.metadata
+        metadata=initial_train_dataset.metadata,
+        crop_name=crop_name
     )
     test_dataset = ShardedYieldDataset(
         data_path=args.data_path, regions=args.regions, flag='test', scaler=scalers,
         indices=initial_train_dataset.test_indices,
         global_index=initial_train_dataset.global_index,
-        metadata=initial_train_dataset.metadata
+        metadata=initial_train_dataset.metadata,
+        crop_name=crop_name
     )
     
     # 4. Create DataLoaders

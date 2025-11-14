@@ -103,6 +103,11 @@ class Exp_Yield_Regression(Exp_Basic):
 
     def train(self, setting):
         train_data, train_loader, _, vali_loader, _, test_loader = self._get_data(flag='train')
+
+        # Add crop_name to the setting path for single-crop training
+        if self.args.crop_name:
+            setting = f"{self.args.crop_name}_{setting}"
+
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)

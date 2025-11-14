@@ -144,6 +144,7 @@ if __name__ == '__main__':
     # Yield Regression Task
     parser.add_argument('--regions', type=str, default='us,ar,br,cn,in,eu', help='regions to use for training')
     parser.add_argument('--static_feat_dim', type=int, default=65, help='dimension of static features')
+    parser.add_argument('--crop_name', type=str, default=None, help='Specific crop to train on, e.g., Maize, Rice')
     parser.add_argument('--n_experts', type=int, default=8, help='number of experts in MoE model')
     parser.add_argument('--head_mlp_dim', type=int, default=128, help='dimension of MLP in regression head')
     parser.add_argument('--aux_loss_weight', type=float, default=0.01, help='weight for auxiliary MoE loss')
