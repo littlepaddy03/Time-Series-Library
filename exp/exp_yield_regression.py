@@ -23,13 +23,21 @@ class Exp_Yield_Regression(Exp_Basic):
         self.writer = None
 
     def _build_model(self):
-        # We override this method to inject our custom regression models
-        if self.args.model == 'TimeXer':
-            model_class = TimeXer_Regression.Model
-        elif self.args.model == 'TimeMixer':
-            model_class = TimeMixer_Regression.Model
+        # We define a local model dictionary specific to this experiment
+        model_dict = {
+            'TimeXer': TimeXer_Regression,
+            'TimeXer_Regression': TimeXer_Regression,
+            'TimeMixer': TimeMixer_Regression,
+            'TimeMixer_Regression': TimeMixer_Regression,
+        }
+
+        model_name = self.args.model
+        if model_name in model_dict:
+            model_class = model_dict[model_name].Model
         else:
-            model_class = self.model_dict[self.args.model].Model
+            # Fallback to the parent's model_dict if it's not a specific regression model
+            # This is for compatibility but the primary models should be in the local dict.
+            model_class = self.model_dict[model_name].Model
 
         model = model_class(self.args).float()
 
