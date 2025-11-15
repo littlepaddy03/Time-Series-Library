@@ -22,9 +22,12 @@ class Model(nn.Module):
         base_configs.enc_in = configs.enc_in # Dynamic feature dim
         base_configs.dec_in = configs.static_feat_dim # Static feature dim
         base_configs.c_out = 1 # Not used in encoder-only, but good practice
-        base_configs.task_name = 'long_term_forecast' # To use the forecast forward pass
 
+        # Temporarily change task_name to initialize backbone, then restore it
+        original_task_name = base_configs.task_name
+        base_configs.task_name = 'long_term_forecast'
         self.backbone = TimeXer_Base(base_configs)
+        base_configs.task_name = original_task_name
 
         # Regression head
         # The output of TimeXer backbone's encoder is based on the [GLB] token, which has shape (B, d_model)
