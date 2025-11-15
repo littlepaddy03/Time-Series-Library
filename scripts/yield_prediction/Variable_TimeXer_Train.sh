@@ -19,7 +19,7 @@ python -u run.py \
   --model_id Global_Yield_Variable_TimeXer \
   --model $model_name \
   --data custom \
-  --features S \
+  --features M \
   --seq_len 200 \
   --label_len 0 \
   --pred_len 1 \

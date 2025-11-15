@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from models.TimeXer import Model as TimeXer_Base
+from layers.Embed import DataEmbedding_inverted
 
 
 class Model(nn.Module):
@@ -14,29 +15,26 @@ class Model(nn.Module):
         self.patch_len = configs.patch_len
         self.d_model = configs.d_model
 
-        # Instantiate the base TimeXer model
-        # We need to tell the base model about the dynamic and static feature dimensions
-        # Following convention, `enc_in` from args is for dynamic features.
-        # `static_feat_dim` from args is for static features.
-        base_configs = configs
+        # Store original task name
+        original_task_name = configs.task_name
 
-        # BUG WORKAROUND: The original TimeXer's `ex_embedding` is incorrectly initialized with `enc_in`
-        # instead of `dec_in`. To fix this, we temporarily set `enc_in` to the static feature dimension
-        # before initializing the backbone, and then restore it.
-        original_enc_in = base_configs.enc_in
-        base_configs.enc_in = configs.static_feat_dim # Temporarily set for ex_embedding
-        base_configs.dec_in = configs.static_feat_dim # Static feature dim (correct for other parts if used)
-        base_configs.c_out = 1 # Not used in encoder-only, but good practice
+        # Initialize the TimeXer backbone.
+        # `en_embedding` will be correct, but `ex_embedding` will be wrong.
+        configs.task_name = 'long_term_forecast'
+        self.backbone = TimeXer_Base(configs)
 
-        # Temporarily change task_name to initialize backbone, then restore it
-        original_task_name = base_configs.task_name
-        base_configs.task_name = 'long_term_forecast'
+        # Surgical fix: Manually replace the incorrectly initialized ex_embedding module.
+        # The original TimeXer incorrectly uses configs.enc_in for this. We use the correct static_feat_dim.
+        self.backbone.ex_embedding = DataEmbedding_inverted(
+            configs.static_feat_dim,
+            configs.d_model,
+            configs.embed,
+            configs.freq,
+            configs.dropout
+        )
 
-        self.backbone = TimeXer_Base(base_configs)
-
-        # Restore original enc_in for consistency
-        base_configs.enc_in = original_enc_in
-        base_configs.task_name = original_task_name
+        # Restore the original task name to avoid side effects
+        configs.task_name = original_task_name
 
         # Regression head
         # The output of TimeXer backbone's encoder is based on the [GLB] token, which has shape (B, d_model)
