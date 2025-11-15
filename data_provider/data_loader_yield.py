@@ -115,7 +115,7 @@ class ShardedYieldDataset(Dataset):
 
     @staticmethod
     def _calculate_scaler(train_dataset, data_files, args):
-        print("Calculating scaler on training data...")
+        print("--- [DEBUG] Starting scaler calculation for variable-length data ---")
 
         static_feat_dim = args.static_feat_dim
         dynamic_feat_dim = args.enc_in
@@ -123,28 +123,33 @@ class ShardedYieldDataset(Dataset):
         static_sum = np.zeros(static_feat_dim, dtype=np.float64)
         static_sq_sum = np.zeros(static_feat_dim, dtype=np.float64)
         dynamic_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
-        dynamic_sq_sum = np.zeros(20, dtype=np.float64)
-        non_zero_count = np.zeros(20, dtype=np.int64)
+        dynamic_sq_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
+        non_zero_count = np.zeros(dynamic_feat_dim, dtype=np.int64)
 
-        chunk_size = 10000
-        for i in range(0, len(train_dataset.indices), chunk_size):
-            chunk_indices = train_dataset.indices[i:i+chunk_size]
+        # Since dynamic features are variable-length, we can't vectorize the sum easily.
+        # We iterate through each sample to calculate statistics.
+        print(f"Total training samples to process for scaler: {len(train_dataset.indices)}")
 
-            static_list, dynamic_list = [], []
-            for g_idx in chunk_indices:
-                region, local_idx = train_dataset.global_index[g_idx]
-                static_list.append(data_files[region]['static'][local_idx])
-                dynamic_list.append(data_files[region]['dynamic'][local_idx])
+        for i, g_idx in enumerate(train_dataset.indices):
+            region, local_idx = train_dataset.global_index[g_idx]
 
-            static_chunk = np.array(static_list)
-            dynamic_chunk = np.array(dynamic_list)
+            # Process static features
+            static_sample = data_files[region]['static'][local_idx]
+            static_sum += static_sample
+            static_sq_sum += np.square(static_sample)
 
-            static_sum += static_chunk.sum(axis=0)
-            static_sq_sum += np.square(static_chunk).sum(axis=0)
-            non_zero_mask = dynamic_chunk != 0
-            dynamic_sum += dynamic_chunk.sum(axis=(0, 1))
-            dynamic_sq_sum += np.square(dynamic_chunk).sum(axis=(0, 1))
-            non_zero_count += non_zero_mask.sum(axis=(0, 1))
+            # Process dynamic features
+            dynamic_sample = data_files[region]['dynamic'][local_idx] # This is a (L, C) array
+
+            if i < 5: # Debug print for the first 5 samples
+                print(f"  [DEBUG] Sample {i}: region={region}, local_idx={local_idx}, dynamic_shape={dynamic_sample.shape}")
+
+            non_zero_mask = dynamic_sample != 0
+            dynamic_sum += dynamic_sample.sum(axis=0)
+            dynamic_sq_sum += np.square(dynamic_sample).sum(axis=0)
+            non_zero_count += non_zero_mask.sum(axis=0)
+
+        print("--- [DEBUG] Finished iterating through all samples ---")
 
         num_train_samples = len(train_dataset.indices)
         static_mean = static_sum / num_train_samples
