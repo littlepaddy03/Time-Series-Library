@@ -7,7 +7,6 @@ model_name=TimeXer_Regression
 python -u run.py \
   --task_name yield_regression \
   --is_training 0 \
-  --flag test \
   --root_path ./ \
   --data_path dataset/global_yield_dataset/ \
   --model_id Global_Yield_Variable_Test \
@@ -27,7 +26,6 @@ python -u run.py \
   --itr 1 \
   --loss 'MSE' \
   --patch_len 16 \
-  --dynamic_feat_dim 20 \
   --static_feat_dim 66 \
   --head_mlp_dim 128 \
   --regions 'us'

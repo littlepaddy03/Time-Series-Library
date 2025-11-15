@@ -16,11 +16,11 @@ class Model(nn.Module):
 
         # Instantiate the base TimeXer model
         # We need to tell the base model about the dynamic and static feature dimensions
-        # The base model's 'enc_in' will be our dynamic feature count.
-        # The base model's 'dec_in' will be our static feature count.
+        # Following convention, `enc_in` is used for dynamic features.
+        # `static_feat_dim` is used for static features, which we map to `dec_in` for the base model.
         base_configs = configs
-        base_configs.enc_in = configs.dynamic_feat_dim
-        base_configs.dec_in = configs.static_feat_dim
+        base_configs.enc_in = configs.enc_in # Dynamic feature dim
+        base_configs.dec_in = configs.static_feat_dim # Static feature dim
         base_configs.c_out = 1 # Not used in encoder-only, but good practice
         base_configs.task_name = 'long_term_forecast' # To use the forecast forward pass
 
