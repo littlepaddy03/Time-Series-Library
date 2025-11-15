@@ -115,47 +115,64 @@ class ShardedYieldDataset(Dataset):
 
     @staticmethod
     def _calculate_scaler(train_dataset, data_files, args):
-        print("--- [DEBUG] Starting scaler calculation for variable-length data ---")
+        print("--- Starting selective scaler calculation ---")
 
         static_feat_dim = args.static_feat_dim
         dynamic_feat_dim = args.enc_in
 
-        static_sum = np.zeros(static_feat_dim, dtype=np.float64)
-        static_sq_sum = np.zeros(static_feat_dim, dtype=np.float64)
+        # Define indices for different feature types based on etl.py
+        # Context: 0-3 (lon, lat, year, crop_id)
+        # Soil: 4-64 (61 features)
+        # Climate: 65 (Koppen-Geiger ID)
+        soil_indices = np.arange(4, 65)
+
+        # Initialize accumulators for features to be scaled
+        soil_sum = np.zeros(len(soil_indices), dtype=np.float64)
+        soil_sq_sum = np.zeros(len(soil_indices), dtype=np.float64)
         dynamic_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
         dynamic_sq_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
         non_zero_count = np.zeros(dynamic_feat_dim, dtype=np.int64)
 
-        # Since dynamic features are variable-length, we can't vectorize the sum easily.
-        # We iterate through each sample to calculate statistics.
         print(f"Total training samples to process for scaler: {len(train_dataset.indices)}")
 
         for i, g_idx in enumerate(train_dataset.indices):
             region, local_idx = train_dataset.global_index[g_idx]
 
-            # Process static features
             static_sample = data_files[region]['static'][local_idx]
-            static_sum += static_sample
-            static_sq_sum += np.square(static_sample)
+            dynamic_sample = data_files[region]['dynamic'][local_idx]
 
-            # Process dynamic features
-            dynamic_sample = data_files[region]['dynamic'][local_idx] # This is a (L, C) array
+            # Accumulate stats ONLY for soil features
+            soil_features = static_sample[soil_indices]
+            soil_sum += soil_features
+            soil_sq_sum += np.square(soil_features)
 
-            if i < 5: # Debug print for the first 5 samples
-                print(f"  [DEBUG] Sample {i}: region={region}, local_idx={local_idx}, dynamic_shape={dynamic_sample.shape}")
-
+            # Accumulate stats for dynamic features
             non_zero_mask = dynamic_sample != 0
             dynamic_sum += dynamic_sample.sum(axis=0)
             dynamic_sq_sum += np.square(dynamic_sample).sum(axis=0)
             non_zero_count += non_zero_mask.sum(axis=0)
 
-        print("--- [DEBUG] Finished iterating through all samples ---")
+        print("--- Finished iterating through all samples ---")
 
         num_train_samples = len(train_dataset.indices)
-        static_mean = static_sum / num_train_samples
-        static_var = static_sq_sum / num_train_samples - np.square(static_mean)
-        static_std = np.sqrt(np.maximum(static_var, 1e-8))
 
+        # --- Calculate scaler for static features (selectively) ---
+        # Initialize with mean=0 and std=1 so that non-soil features are unchanged
+        static_mean = np.zeros(static_feat_dim, dtype=np.float64)
+        static_std = np.ones(static_feat_dim, dtype=np.float64)
+
+        # Calculate and fill in the stats for soil features
+        soil_mean = soil_sum / num_train_samples
+        soil_var = soil_sq_sum / num_train_samples - np.square(soil_mean)
+        soil_std = np.sqrt(np.maximum(soil_var, 1e-8))
+
+        static_mean[soil_indices] = soil_mean
+        static_std[soil_indices] = soil_std
+
+        print(f"  [DEBUG] Final static_mean (sample): lon={static_mean[0]}, crop_id={static_mean[3]}, first_soil={static_mean[4]:.2f}")
+        print(f"  [DEBUG] Final static_std (sample): lon={static_std[0]}, crop_id={static_std[3]}, first_soil={static_std[4]:.2f}")
+
+        # --- Calculate scaler for dynamic features ---
         non_zero_count[non_zero_count == 0] = 1
         dynamic_mean = dynamic_sum / non_zero_count
         dynamic_var = dynamic_sq_sum / non_zero_count - np.square(dynamic_mean)
