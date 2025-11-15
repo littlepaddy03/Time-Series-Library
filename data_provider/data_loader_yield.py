@@ -2,7 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
 import torch
 
 def custom_collate_fn(batch):
@@ -115,64 +115,63 @@ class ShardedYieldDataset(Dataset):
 
     @staticmethod
     def _calculate_scaler(train_dataset, data_files, args):
-        print("--- Starting selective scaler calculation ---")
-
-        static_feat_dim = args.static_feat_dim
+        print("--- Starting multi-strategy scaler calculation ---")
         dynamic_feat_dim = args.enc_in
 
-        # Define indices for different feature types based on etl.py
-        # Context: 0-3 (lon, lat, year, crop_id)
-        # Soil: 4-64 (61 features)
-        # Climate: 65 (Koppen-Geiger ID)
-        soil_indices = np.arange(4, 65)
+        # Define indices for different feature types
+        lon_lat_year_indices = [0, 1, 2]
+        crop_id_index = 3
+        soil_indices = list(range(4, 65))
+        climate_index = 65
 
-        # Initialize accumulators for features to be scaled
+        # --- Initialize accumulators and data collectors ---
         soil_sum = np.zeros(len(soil_indices), dtype=np.float64)
         soil_sq_sum = np.zeros(len(soil_indices), dtype=np.float64)
         dynamic_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
         dynamic_sq_sum = np.zeros(dynamic_feat_dim, dtype=np.float64)
         non_zero_count = np.zeros(dynamic_feat_dim, dtype=np.int64)
 
-        print(f"Total training samples to process for scaler: {len(train_dataset.indices)}")
+        # Collect all lon/lat/year features to fit the MinMaxScaler
+        lon_lat_year_data = np.zeros((len(train_dataset.indices), len(lon_lat_year_indices)), dtype=np.float64)
 
+        print(f"Total training samples to process for scaler: {len(train_dataset.indices)}")
         for i, g_idx in enumerate(train_dataset.indices):
             region, local_idx = train_dataset.global_index[g_idx]
-
             static_sample = data_files[region]['static'][local_idx]
             dynamic_sample = data_files[region]['dynamic'][local_idx]
 
-            # Accumulate stats ONLY for soil features
+            # Accumulate for StandardScaler (Soil)
             soil_features = static_sample[soil_indices]
             soil_sum += soil_features
             soil_sq_sum += np.square(soil_features)
 
-            # Accumulate stats for dynamic features
+            # Collect for MinMaxScaler (Lon, Lat, Year)
+            lon_lat_year_data[i] = static_sample[lon_lat_year_indices]
+
+            # Accumulate for StandardScaler (Dynamic)
             non_zero_mask = dynamic_sample != 0
             dynamic_sum += dynamic_sample.sum(axis=0)
             dynamic_sq_sum += np.square(dynamic_sample).sum(axis=0)
             non_zero_count += non_zero_mask.sum(axis=0)
 
-        print("--- Finished iterating through all samples ---")
-
+        print("--- Finished data accumulation. Calculating scalers. ---")
         num_train_samples = len(train_dataset.indices)
 
-        # --- Calculate scaler for static features (selectively) ---
-        # Initialize with mean=0 and std=1 so that non-soil features are unchanged
-        static_mean = np.zeros(static_feat_dim, dtype=np.float64)
-        static_std = np.ones(static_feat_dim, dtype=np.float64)
-
-        # Calculate and fill in the stats for soil features
+        # --- Calculate StandardScaler for Soil Features ---
         soil_mean = soil_sum / num_train_samples
         soil_var = soil_sq_sum / num_train_samples - np.square(soil_mean)
         soil_std = np.sqrt(np.maximum(soil_var, 1e-8))
 
-        static_mean[soil_indices] = soil_mean
-        static_std[soil_indices] = soil_std
+        # --- Fit MinMaxScaler for Lon, Lat, Year ---
+        min_max_scaler = MinMaxScaler(feature_range=(-1, 1))
+        min_max_scaler.fit(lon_lat_year_data)
 
-        print(f"  [DEBUG] Final static_mean (sample): lon={static_mean[0]}, crop_id={static_mean[3]}, first_soil={static_mean[4]:.2f}")
-        print(f"  [DEBUG] Final static_std (sample): lon={static_std[0]}, crop_id={static_std[3]}, first_soil={static_std[4]:.2f}")
+        print(f"  [DEBUG] Soil mean (first 3): {soil_mean[:3]}")
+        print(f"  [DEBUG] Soil std (first 3): {soil_std[:3]}")
+        print(f"  [DEBUG] MinMaxScaler min_ (lon,lat,year): {min_max_scaler.min_}")
+        print(f"  [DEBUG] MinMaxScaler scale_ (lon,lat,year): {min_max_scaler.scale_}")
 
-        # --- Calculate scaler for dynamic features ---
+        # --- Calculate StandardScaler for Dynamic Features ---
         non_zero_count[non_zero_count == 0] = 1
         dynamic_mean = dynamic_sum / non_zero_count
         dynamic_var = dynamic_sq_sum / non_zero_count - np.square(dynamic_mean)
@@ -180,7 +179,8 @@ class ShardedYieldDataset(Dataset):
 
         scaler_dict = {
             'dynamic_mean': torch.FloatTensor(dynamic_mean), 'dynamic_std': torch.FloatTensor(dynamic_std),
-            'static_mean': torch.FloatTensor(static_mean), 'static_std': torch.FloatTensor(static_std),
+            'soil_mean': torch.FloatTensor(soil_mean), 'soil_std': torch.FloatTensor(soil_std),
+            'min_max_scaler': min_max_scaler
         }
         return scaler_dict
 
@@ -195,16 +195,41 @@ class ShardedYieldDataset(Dataset):
         static_features_orig = self.data_files[region]['static'][local_idx]
         target = self.data_files[region]['targets'][local_idx]
 
+        # Keep a copy of the original static features for analysis
+        unnormalized_static_features = torch.FloatTensor(static_features_orig.copy())
+
+        # --- Apply Dynamic Feature Scaling ---
         dynamic_features_tensor = torch.FloatTensor(dynamic_features)
-        static_features_tensor = torch.FloatTensor(static_features_orig)
-        target_tensor = torch.FloatTensor(target)
+        if self.scaler and 'dynamic_mean' in self.scaler:
+             dynamic_features_tensor = (dynamic_features_tensor - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
 
-        # Keep a copy of the original static features for analysis purposes
-        unnormalized_static_features = static_features_tensor.clone()
-
+        # --- Apply Multi-Strategy Static Feature Scaling ---
         if self.scaler:
-            dynamic_features_tensor = (dynamic_features_tensor - self.scaler['dynamic_mean']) / (self.scaler['dynamic_std'] + 1e-8)
-            static_features_tensor = (static_features_tensor - self.scaler['static_mean']) / (self.scaler['static_std'] + 1e-8)
+            # 1. Separate features
+            lon_lat_year = static_features_orig[[0, 1, 2]]
+            crop_id = static_features_orig[[3]]
+            soil = static_features_orig[4:65]
+            climate = static_features_orig[[65]]
+
+            # 2. Apply transformations
+            # Min-Max scale lon, lat, year
+            lon_lat_year_scaled = self.scaler['min_max_scaler'].transform(lon_lat_year.reshape(1, -1)).flatten()
+
+            # Standard scale soil features
+            soil_scaled = (soil - self.scaler['soil_mean'].numpy()) / (self.scaler['soil_std'].numpy() + 1e-8)
+
+            # 3. Recombine into a single tensor
+            static_features_tensor = torch.cat([
+                torch.FloatTensor(lon_lat_year_scaled),
+                torch.FloatTensor(crop_id),
+                torch.FloatTensor(soil_scaled),
+                torch.FloatTensor(climate)
+            ], dim=0)
+        else:
+            # If no scaler, just convert to tensor
+            static_features_tensor = torch.FloatTensor(static_features_orig)
+
+        target_tensor = torch.FloatTensor(target)
 
         return dynamic_features_tensor, static_features_tensor, target_tensor, unnormalized_static_features
 

@@ -1,9 +1,6 @@
 import math
 import torch
 import torch.nn as nn
-from data_provider.data_factory import data_provider
-
-
 
 class FourierFilter(nn.Module):
     """
@@ -262,7 +259,7 @@ class Model(nn.Module):
         self.hidden_layers = hidden_layers
         self.multistep = multistep
         self.alpha = 0.2
-        self.mask_spectrum = self._get_mask_spectrum(configs)
+        self.mask_spectrum = []
 
         self.disentanglement = FourierFilter(self.mask_spectrum)
 
@@ -295,18 +292,6 @@ class Model(nn.Module):
                         multistep=self.multistep)
                     for _ in range(self.num_blocks)])
 
-    def _get_mask_spectrum(self, configs):
-        """
-        get shared frequency spectrums
-        """
-        train_data, train_loader = data_provider(configs, 'train')
-        amps = 0.0
-        for data in train_loader:
-            lookback_window = data[0]
-            amps += abs(torch.fft.rfft(lookback_window, dim=1)).mean(dim=0).mean(dim=1)
-        mask_spectrum = amps.topk(int(amps.shape[0]*self.alpha)).indices
-        return mask_spectrum # as the spectrums of time-invariant component
-    
     def forecast(self, x_enc):
         # Series Stationarization adopted from NSformer
         mean_enc = x_enc.mean(1, keepdim=True).detach() # B x 1 x E
