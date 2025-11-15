@@ -5,6 +5,35 @@ from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 import torch
 
+def custom_collate_fn(batch):
+    """
+    Collate function to handle variable length sequences and create attention masks.
+    """
+    # Separate the components of the batch
+    dynamic_features_list = [item[0] for item in batch]
+    static_features_list = [item[1] for item in batch]
+    targets_list = [item[2] for item in batch]
+    unnormalized_statics_list = [item[3] for item in batch]
+
+    # Determine the maximum sequence length in the batch
+    max_len = max(seq.shape[0] for seq in dynamic_features_list)
+
+    # Pad dynamic features and create attention masks
+    padded_dynamics = torch.zeros(len(batch), max_len, dynamic_features_list[0].shape[1])
+    attention_masks = torch.zeros(len(batch), max_len, dtype=torch.bool)
+
+    for i, seq in enumerate(dynamic_features_list):
+        length = seq.shape[0]
+        padded_dynamics[i, :length, :] = seq
+        attention_masks[i, :length] = True
+
+    # Stack static features and targets
+    statics = torch.stack(static_features_list)
+    targets = torch.stack(targets_list)
+    unnormalized_statics = torch.stack(unnormalized_statics_list)
+
+    return padded_dynamics, statics, targets, unnormalized_statics, attention_masks
+
 class ShardedYieldDataset(Dataset):
     def __init__(self, data_path, regions, flag, scaler=None, indices=None, global_index=None, metadata=None):
         self.data_path = data_path
@@ -24,7 +53,7 @@ class ShardedYieldDataset(Dataset):
 
     def _open_mmap_files(self):
         self.data_files = {region: {
-            'dynamic': np.load(os.path.join(self.data_path, region, 'dynamic_features.npy'), mmap_mode='r'),
+            'dynamic': np.load(os.path.join(self.data_path, region, 'dynamic_features.npy'), mmap_mode='r', allow_pickle=True),
             'static': np.load(os.path.join(self.data_path, region, 'static_features.npy'), mmap_mode='r'),
             'targets': np.load(os.path.join(self.data_path, region, 'targets.npy'), mmap_mode='r'),
         } for region in self.regions}
@@ -192,15 +221,15 @@ def data_provider_yield(args, flag):
     # 4. Create DataLoaders
     train_loader = torch.utils.data.DataLoader(
         initial_train_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, drop_last=True
+        num_workers=args.num_workers, drop_last=True, collate_fn=custom_collate_fn
     )
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, drop_last=False
+        num_workers=args.num_workers, drop_last=False, collate_fn=custom_collate_fn
     )
     test_loader = torch.utils.data.DataLoader(
         test_dataset, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, drop_last=False
+        num_workers=args.num_workers, drop_last=False, collate_fn=custom_collate_fn
     )
 
     return initial_train_dataset, train_loader, val_dataset, val_loader, test_dataset, test_loader

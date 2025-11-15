@@ -24,7 +24,9 @@ class Exp_Yield_Regression(Exp_Basic):
 
     def _build_model(self):
         # We override this method to inject our custom regression models
-        if self.args.model == 'TimeXer':
+        if self.args.model == 'TimeXer_Regression':
+            model_class = TimeXer_Regression.Model
+        elif self.args.model == 'TimeXer': # Keep compatibility with old name
             model_class = TimeXer_Regression.Model
         elif self.args.model == 'TimeMixer':
             model_class = TimeMixer_Regression.Model
@@ -52,13 +54,17 @@ class Exp_Yield_Regression(Exp_Basic):
         return criterion
 
     def _process_one_batch(self, batch_data):
-        batch_x, batch_x_static, batch_y, batch_x_static_unnormalized = batch_data
+        # Unpack all five items from our custom collate function
+        batch_x, batch_x_static, batch_y, batch_x_static_unnormalized, attention_mask = batch_data
+
         batch_x = batch_x.float().to(self.device)
         batch_x_static = batch_x_static.float().to(self.device)
         batch_y = batch_y.float().to(self.device)
+        attention_mask = attention_mask.bool().to(self.device)
 
-        # Handle models that may return a single tensor or a tuple
-        model_output = self.model(batch_x, batch_x_static)
+        # Pass the attention mask to the model
+        model_output = self.model(batch_x, batch_x_static, attention_mask)
+
         if isinstance(model_output, tuple):
             outputs, aux_loss, affinities = model_output
         else:

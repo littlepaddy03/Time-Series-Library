@@ -40,10 +40,7 @@ def parse_args():
     parser.add_argument('--target_dir', type=str, default='./data/tsl', help='Target directory to save processed .npy files')
     return parser.parse_args()
 
-# 2. 序列长度
-L_SEQUENCE_LENGTH = 365
-
-# 3. 动态特征 (C) - 20个
+# 2. 动态特征 (C) - 20个
 C_DYNAMIC_COLS = [
     'NDVI', 'Wind_Speed_10m_Mean', 'Temperature_Air_2m_Min_24h',
     'Temperature_Air_2m_Max_24h', 'Temperature_Air_2m_Mean_24h',
@@ -183,26 +180,12 @@ def main(args):
         for (lon, lat, year), sample_df in tqdm(sample_groups, desc=f"  -> {source_file}", leave=False):
 
             # --- a. 创建动态特征数组 (L, C) ---
-            # (L, C) 的全零数组
-            dynamic_sample_array = np.zeros((L_SEQUENCE_LENGTH, len(C_DYNAMIC_COLS)), dtype=np.float32)
-
-            # 获取该样本的动态数据
+            # 直接提取样本的动态数据，不再填充
             try:
-                growing_season_data = sample_df[C_DYNAMIC_COLS].values
+                dynamic_sample_array = sample_df[C_DYNAMIC_COLS].values.astype(np.float32)
             except KeyError as e:
                 print(f"错误: {source_file} 缺少动态列 {e}. 跳过此样本.")
                 continue # 跳过这个损坏的样本
-
-            # 获取对应的日历天 (1-365)
-            day_of_year = sample_df['date'].dt.dayofyear.values
-
-            # 检查越界 (如果数据日期错误)
-            if (day_of_year > 365).any() or (day_of_year < 1).any():
-                print(f"警告: {source_file} 样本 (lon:{lon}, lat:{lat}, year:{year}) 包含无效日期. 跳过此样本.")
-                continue
-
-            # 将生长期数据填充到 365 天数组的正确位置 (doy-1 转换为 0-indexed)
-            dynamic_sample_array[day_of_year - 1] = growing_season_data
 
             # --- b. 创建静态特征数组 (M,) ---
             # 从该样本的第一行获取所有静态数据
@@ -268,7 +251,8 @@ def main(args):
 
         # 将列表转换为大型Numpy数组
         try:
-            dynamic_arr = np.array(data['dynamic_list'], dtype=np.float32)
+            # 对于变长序列，dynamic_arr将是一个对象数组
+            dynamic_arr = np.array(data['dynamic_list'], dtype=object)
             static_arr = np.array(data['static_list'], dtype=np.float32)
             target_arr = np.array(data['target_list'], dtype=np.float32)
         except Exception as e:
@@ -280,10 +264,8 @@ def main(args):
         M_expected = len(M_STATIC_SOIL_COLS) + 4  # 61 (土壤) + 4 (上下文) = 65
         if kg_dataset:
             M_expected += 1 # 如果气候数据可用, 则为66
-        C_expected = len(C_DYNAMIC_COLS) # 20
 
-        if dynamic_arr.shape != (N_r, L_SEQUENCE_LENGTH, C_expected):
-            print(f"  -> 错误: Dynamic array 形状不匹配! 预期: {(N_r, L_SEQUENCE_LENGTH, C_expected)}, 得到: {dynamic_arr.shape}")
+        # 由于是变长，不再检查dynamic_arr的形状
         if static_arr.shape[0] != N_r or (static_arr.shape[1] != M_expected and static_arr.shape[1] != M_expected -1):
              print(f"  -> 错误: Static array 形状不匹配! 预期样本数: {N_r}, 预期特征数: {M_expected}, 得到: {static_arr.shape}")
         if target_arr.shape != (N_r, 1):

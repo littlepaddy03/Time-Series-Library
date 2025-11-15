@@ -1,73 +1,110 @@
 import torch
 import torch.nn as nn
-from models.TimeXer import Model as TimeXer_Base_Model
+from models.TimeXer import Model as TimeXer_Base
 
-class Model(TimeXer_Base_Model):
+
+class Model(nn.Module):
     """
-    TimeXer model adapted for the yield regression task.
+    TimeXer model adapted for the yield regression task, with support for variable sequence lengths
+    and proper handling of static (exogenous) and dynamic (endogenous) features.
     """
+
     def __init__(self, configs):
-        # We need to set task_name to a forecasting one to inherit __init__
-        original_task_name = configs.task_name
-        configs.task_name = 'long_term_forecast'
-        super().__init__(configs)
-        configs.task_name = original_task_name
-
+        super().__init__()
+        self.patch_len = configs.patch_len
         self.d_model = configs.d_model
-        static_feat_dim = getattr(configs, 'static_feat_dim', 0)
-        head_mlp_dim = getattr(configs, 'head_mlp_dim', 128)
-        head_input_dim = self.d_model + static_feat_dim
 
+        # Instantiate the base TimeXer model
+        # We need to tell the base model about the dynamic and static feature dimensions
+        # The base model's 'enc_in' will be our dynamic feature count.
+        # The base model's 'dec_in' will be our static feature count.
+        base_configs = configs
+        base_configs.enc_in = configs.dynamic_feat_dim
+        base_configs.dec_in = configs.static_feat_dim
+        base_configs.c_out = 1 # Not used in encoder-only, but good practice
+        base_configs.task_name = 'long_term_forecast' # To use the forecast forward pass
+
+        self.backbone = TimeXer_Base(base_configs)
+
+        # Regression head
+        # The output of TimeXer backbone's encoder is based on the [GLB] token, which has shape (B, d_model)
+        # We will take the pooled output from the backbone and pass it to the regression head.
         self.regression_head = nn.Sequential(
-            nn.Linear(head_input_dim, head_mlp_dim),
+            nn.Linear(self.d_model, configs.head_mlp_dim),
             nn.ReLU(),
             nn.Dropout(configs.dropout),
-            nn.Linear(head_mlp_dim, 1)
+            nn.Linear(configs.head_mlp_dim, 1)
         )
 
-    def forward(self, x_dynamic, x_static):
-        # TimeXer expects x_enc and x_mark_enc.
-        # Our data loader provides x_dynamic for x_enc.
-        # We'll create a dummy x_mark_enc as it's not used in our regression task.
-        x_enc = torch.nan_to_num(x_dynamic)
+    def forward(self, x_dynamic, x_static, attention_mask=None):
+        """
+        Forward pass for the regression task.
+        x_dynamic: [B, L, C_dynamic] - Padded dynamic features.
+        x_static: [B, C_static] - Static features.
+        attention_mask: [B, L] - Boolean mask for the dynamic features.
+        """
+        # Convert NaNs to zero to ensure numerical stability
+        x_dynamic = torch.nan_to_num(x_dynamic)
         x_static = torch.nan_to_num(x_static)
 
-        B, L, C = x_enc.shape
-        x_mark_enc = None
+        # TimeXer's base `forecast` method expects `x_enc` and `x_mark_enc`.
+        # We map our inputs accordingly:
+        # x_enc -> x_dynamic
+        # x_mark_enc -> x_static (which will be treated as the exogenous 'cross' features inside)
 
-        if self.use_norm:
-            means = x_enc.mean(1, keepdim=True).detach()
-            x_enc = x_enc - means
-            stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
-            x_enc /= stdev
+        # The base TimeXer model does not directly accept an attention_mask.
+        # However, its underlying Encoder and Attention layers DO.
+        # We need to manually pass the mask to the backbone's encoder.
 
-        # Embedding
-        # The original TimeXer has two embedding branches, one for the main series (en) and one for exogenous (ex).
-        # In our case, x_enc holds all dynamic features.
-        # We will need to decide how to partition them if we want to use the exogenous branch meaningfully.
-        # For a simple baseline, we'll pass all of x_enc to the main branch (`en_embedding`)
-        # and the time features (x_mark_enc) to the exogenous branch (`ex_embedding`).
-        # As our x_mark_enc is None, ex_embed will be based on the value embedding of x_enc only.
+        # 1. Normalization (from base model)
+        if self.backbone.use_norm:
+            means = x_dynamic.mean(1, keepdim=True).detach()
+            x_dynamic = x_dynamic - means
+            stdev = torch.sqrt(torch.var(x_dynamic, dim=1, keepdim=True, unbiased=False) + 1e-5)
+            x_dynamic /= stdev
 
-        en_embed, n_vars = self.en_embedding(x_enc.permute(0, 2, 1))
-        ex_embed = self.ex_embedding(x_enc, x_mark_enc)
+        # 2. Embedding
+        # The TimeXer backbone will handle embedding of dynamic and static features separately.
+        en_embed, n_vars = self.backbone.en_embedding(x_dynamic.permute(0, 2, 1))
+        # Pass static features to the exogenous embedding part
+        ex_embed = self.backbone.ex_embedding(x_static.unsqueeze(1), None) # Unsqueeze to add a time dimension of 1
 
-        # Encoder
-        enc_out = self.encoder(en_embed, ex_embed)
+        # 3. Create patch-level attention mask
+        if attention_mask is not None:
+            # The attention is applied on patches, so we need to create a patch-level mask.
+            # A simple way is to check if a patch contains any unmasked data.
+            num_patches = en_embed.shape[1] -1 # Exclude GLB token
 
-        # Reshape and Pool
+            # Reshape mask to be patch-wise
+            mask_patches = attention_mask.unfold(dimension=-1, size=self.patch_len, step=self.patch_len)
+
+            # A patch is valid if it contains at least one 'True' value
+            patch_mask = torch.any(mask_patches, dim=-1) # Shape: [B, num_patches]
+
+            # Add a True for the [GLB] token at the end
+            glb_mask = torch.ones(patch_mask.shape[0], 1, dtype=torch.bool, device=patch_mask.device)
+            patch_mask = torch.cat([patch_mask, glb_mask], dim=1) # Shape: [B, num_patches + 1]
+
+            # The encoder expects mask of shape [B, 1, L, L] or similar for multi-head attention
+            # For our purpose, a 2D mask [B, num_patches+1] should be broadcast correctly by PyTorch attention layers.
+            # We need to reshape it to be compatible with multi-head attention: [B, 1, 1, num_patches+1]
+            patch_mask = patch_mask.unsqueeze(1).unsqueeze(2)
+
+        else:
+            patch_mask = None
+
+        # 4. Encoder
+        enc_out = self.backbone.encoder(en_embed, ex_embed, x_mask=patch_mask)
+
+        # 5. Pooling
+        # Reshape and extract the [GLB] token's representation
         enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
 
-        # We'll take the output of the [GLB] token for pooling
+        # Average the [GLB] token output across variables/channels
         ts_repr_pooled = enc_out[:, :, -1, :].mean(dim=1)
 
-        # Fusion with static features
-        combined_features = torch.cat([ts_repr_pooled, x_static], dim=1)
+        # 6. Regression
+        prediction = self.regression_head(ts_repr_pooled)
 
-        # Regression
-        prediction = self.regression_head(combined_features)
-
-        # The model should return prediction and optionally other info like in MoE.
-        # For a baseline, returning just the prediction is fine.
-        # To match the experiment runner's expected tuple output for regression, we return None placeholders.
+        # Match the expected output format of the experiment runner
         return prediction, None, None
