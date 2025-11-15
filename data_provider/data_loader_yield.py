@@ -53,7 +53,7 @@ class ShardedYieldDataset(Dataset):
 
     def _open_mmap_files(self):
         self.data_files = {region: {
-            'dynamic': np.load(os.path.join(self.data_path, region, 'dynamic_features.npy'), mmap_mode='r', allow_pickle=True),
+            'dynamic': np.load(os.path.join(self.data_path, region, 'dynamic_features.npy'), allow_pickle=True), # mmap_mode removed for object array
             'static': np.load(os.path.join(self.data_path, region, 'static_features.npy'), mmap_mode='r'),
             'targets': np.load(os.path.join(self.data_path, region, 'targets.npy'), mmap_mode='r'),
         } for region in self.regions}
